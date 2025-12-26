@@ -77,6 +77,7 @@ pub struct SlabAllocator {
     // TODO: 大きなサイズ用のバンプアロケータ（解放不可）
     // 将来的にはバディアロケータまたはリンクリストアロケータに置き換える
     // Issue: https://github.com/jugeeeemu-tech/je4OS/issues/1
+    #[cfg(feature = "visualize")]
     large_alloc_start: UnsafeCell<usize>,
     large_alloc_next: UnsafeCell<usize>,
     large_alloc_end: UnsafeCell<usize>,
@@ -97,6 +98,7 @@ impl SlabAllocator {
                 SlabCache::new(SIZE_CLASSES[8]),
                 SlabCache::new(SIZE_CLASSES[9]),
             ],
+            #[cfg(feature = "visualize")]
             large_alloc_start: UnsafeCell::new(0),
             large_alloc_next: UnsafeCell::new(0),
             large_alloc_end: UnsafeCell::new(0),
@@ -132,7 +134,10 @@ impl SlabAllocator {
 
         // 大きなサイズ用の領域を初期化
         unsafe {
-            *self.large_alloc_start.get() = large_region_start;
+            #[cfg(feature = "visualize")]
+            {
+                *self.large_alloc_start.get() = large_region_start;
+            }
             *self.large_alloc_next.get() = large_region_start;
             *self.large_alloc_end.get() = heap_start + heap_size;
         }
@@ -162,7 +167,14 @@ impl SlabAllocator {
             }
         }
     }
+}
 
+// =============================================================================
+// 可視化機能専用のメソッド
+// cargo build --features visualize でビルドした場合のみ有効
+// =============================================================================
+#[cfg(feature = "visualize")]
+impl SlabAllocator {
     // デバッグ: サイズクラスごとの空きブロック数をカウント
     pub fn count_free_blocks(&self, class_idx: usize) -> usize {
         if class_idx >= NUM_SIZE_CLASSES {
@@ -253,12 +265,15 @@ pub unsafe fn init_heap(heap_start: usize, heap_size: usize) {
     }
 }
 
-// デバッグ用: グローバルアロケータへのアクセス
+// =============================================================================
+// 可視化機能専用のユーティリティ関数
+// =============================================================================
+#[cfg(feature = "visualize")]
 pub fn get_allocator() -> &'static SlabAllocator {
     &ALLOCATOR
 }
 
-// サイズクラスの配列を公開
+#[cfg(feature = "visualize")]
 pub fn get_size_classes() -> &'static [usize] {
     SIZE_CLASSES
 }

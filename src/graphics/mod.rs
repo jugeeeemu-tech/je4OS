@@ -72,12 +72,25 @@ pub fn draw_rect_outline(fb_base: u64, width: u32, x: usize, y: usize, w: usize,
 
 // フレームバッファライター（writeln!マクロ対応）
 pub struct FramebufferWriter {
+    // 可視化機能が有効な場合はパブリック、それ以外はプライベート
+    #[cfg(feature = "visualize")]
     pub fb_base: u64,
+    #[cfg(not(feature = "visualize"))]
+    fb_base: u64,
+
+    #[cfg(feature = "visualize")]
     pub width: u32,
+    #[cfg(not(feature = "visualize"))]
+    width: u32,
+
+    #[cfg(feature = "visualize")]
     pub height: u32,
-    pub x: usize,
-    pub y: usize,
-    pub color: u32,
+    #[cfg(not(feature = "visualize"))]
+    height: u32,
+
+    x: usize,
+    y: usize,
+    color: u32,
 }
 
 impl FramebufferWriter {
