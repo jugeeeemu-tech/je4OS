@@ -1,0 +1,6 @@
+[build]
+target = 'x86_64-unknown-uefi'
+rustflags = ["-Cforce-unwind-tables", "-Cforce-frame-pointers", "-Cno-redzone"]
+
+[target.'cfg(target_os = "uefi")']
+runner = "bash scripts/launch_qemu.sh"
