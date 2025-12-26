@@ -11,8 +11,8 @@ mod io;
 mod serial;
 mod uefi;
 
-#[cfg(feature = "visualize")]
-mod visualization;
+#[cfg(feature = "visualize-allocator")]
+mod allocator_visualization;
 
 use graphics::FramebufferWriter;
 use uefi::*;
@@ -193,10 +193,10 @@ extern "efiapi" fn efi_main(
 
         if largest_size > 0 {
             // ヒープとして使用するサイズ
-            #[cfg(feature = "visualize")]
+            #[cfg(feature = "visualize-allocator")]
             let heap_size = (largest_size as usize).min(256 * 1024); // 可視化のため256KBに制限
 
-            #[cfg(not(feature = "visualize"))]
+            #[cfg(not(feature = "visualize-allocator"))]
             let heap_size = largest_size as usize; // 本番環境では全て使用
 
             unsafe {
@@ -217,9 +217,9 @@ extern "efiapi" fn efi_main(
         let _ = writeln!(writer, "Boot Services Exited!");
         writer.set_position(10, 300);
 
-        #[cfg(feature = "visualize")]
+        #[cfg(feature = "visualize-allocator")]
         {
-            visualization::run_visualization_tests(&mut writer);
+            allocator_visualization::run_visualization_tests(&mut writer);
         }
     } else {
         error!("Failed to exit boot services! Status: 0x{:X}", status);

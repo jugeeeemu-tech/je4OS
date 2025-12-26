@@ -1,6 +1,6 @@
 // =============================================================================
 // メモリアロケータ可視化機能
-// cargo build --release --features visualize でビルドした場合のみ有効
+// cargo build --release --features visualize-allocator でビルドした場合のみ有効
 // =============================================================================
 
 use crate::allocator::{self, SlabAllocator};

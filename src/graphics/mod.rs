@@ -81,19 +81,19 @@ pub fn draw_rect_outline(
 // フレームバッファライター（writeln!マクロ対応）
 pub struct FramebufferWriter {
     // 可視化機能が有効な場合はパブリック、それ以外はプライベート
-    #[cfg(feature = "visualize")]
+    #[cfg(feature = "visualize-allocator")]
     pub fb_base: u64,
-    #[cfg(not(feature = "visualize"))]
+    #[cfg(not(feature = "visualize-allocator"))]
     fb_base: u64,
 
-    #[cfg(feature = "visualize")]
+    #[cfg(feature = "visualize-allocator")]
     pub width: u32,
-    #[cfg(not(feature = "visualize"))]
+    #[cfg(not(feature = "visualize-allocator"))]
     width: u32,
 
-    #[cfg(feature = "visualize")]
+    #[cfg(feature = "visualize-allocator")]
     pub height: u32,
-    #[cfg(not(feature = "visualize"))]
+    #[cfg(not(feature = "visualize-allocator"))]
     height: u32,
 
     x: usize,

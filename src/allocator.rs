@@ -77,7 +77,7 @@ pub struct SlabAllocator {
     // TODO: 大きなサイズ用のバンプアロケータ（解放不可）
     // 将来的にはバディアロケータまたはリンクリストアロケータに置き換える
     // Issue: https://github.com/jugeeeemu-tech/je4OS/issues/1
-    #[cfg(feature = "visualize")]
+    #[cfg(feature = "visualize-allocator")]
     large_alloc_start: UnsafeCell<usize>,
     large_alloc_next: UnsafeCell<usize>,
     large_alloc_end: UnsafeCell<usize>,
@@ -98,7 +98,7 @@ impl SlabAllocator {
                 SlabCache::new(SIZE_CLASSES[8]),
                 SlabCache::new(SIZE_CLASSES[9]),
             ],
-            #[cfg(feature = "visualize")]
+            #[cfg(feature = "visualize-allocator")]
             large_alloc_start: UnsafeCell::new(0),
             large_alloc_next: UnsafeCell::new(0),
             large_alloc_end: UnsafeCell::new(0),
@@ -135,7 +135,7 @@ impl SlabAllocator {
 
         // 大きなサイズ用の領域を初期化
         unsafe {
-            #[cfg(feature = "visualize")]
+            #[cfg(feature = "visualize-allocator")]
             {
                 *self.large_alloc_start.get() = large_region_start;
             }
@@ -174,7 +174,7 @@ impl SlabAllocator {
 // 可視化機能専用のメソッド
 // cargo build --features visualize でビルドした場合のみ有効
 // =============================================================================
-#[cfg(feature = "visualize")]
+#[cfg(feature = "visualize-allocator")]
 impl SlabAllocator {
     // デバッグ: サイズクラスごとの空きブロック数をカウント
     pub fn count_free_blocks(&self, class_idx: usize) -> usize {
@@ -270,12 +270,12 @@ pub unsafe fn init_heap(heap_start: usize, heap_size: usize) {
 // 可視化機能専用の内部アクセス関数
 // visualization.rsからのみ呼ばれる想定
 // =============================================================================
-#[cfg(feature = "visualize")]
+#[cfg(feature = "visualize-allocator")]
 pub(crate) fn get_allocator_internal() -> &'static SlabAllocator {
     &ALLOCATOR
 }
 
-#[cfg(feature = "visualize")]
+#[cfg(feature = "visualize-allocator")]
 pub(crate) fn get_size_classes_internal() -> &'static [usize] {
     SIZE_CLASSES
 }
