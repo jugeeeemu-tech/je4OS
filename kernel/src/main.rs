@@ -37,11 +37,6 @@ fn hlt() {
 #[unsafe(no_mangle)]
 extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
     info!("=== Kernel Started ===");
-    info!(
-        "Framebuffer: 0x{:X}, {}x{}",
-        boot_info.framebuffer.base, boot_info.framebuffer.width, boot_info.framebuffer.height
-    );
-    info!("Memory regions: {}", boot_info.memory_map_count);
 
     // フレームバッファライターを作成
     let mut writer = FramebufferWriter::new(
@@ -51,6 +46,14 @@ extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
         0xFFFFFFFF,
     );
     writer.set_position(10, 300);
+
+    // boot_info の情報はFramebufferWriterで表示（こちらは安全）
+    let _ = writeln!(
+        writer,
+        "Framebuffer: 0x{:X}, {}x{}",
+        boot_info.framebuffer.base, boot_info.framebuffer.width, boot_info.framebuffer.height
+    );
+    let _ = writeln!(writer, "Memory regions: {}", boot_info.memory_map_count);
 
     // 利用可能なメモリを探してアロケータを初期化
     let mut largest_start = 0;
@@ -67,7 +70,9 @@ extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
     }
 
     if largest_size > 0 {
-        info!(
+        info!("Found usable memory");
+        let _ = writeln!(
+            writer,
             "Largest usable memory: 0x{:X} - 0x{:X} ({} MB)",
             largest_start,
             largest_start + largest_size,
@@ -86,7 +91,7 @@ extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
         }
 
         let _ = writeln!(writer, "Heap initialized: {} KB", heap_size / 1024);
-        info!("Heap initialized: {} KB", heap_size / 1024);
+        info!("Heap initialized successfully");
     } else {
         error!("No usable memory found!");
         let _ = writeln!(writer, "ERROR: No usable memory!");
@@ -95,6 +100,7 @@ extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
     // 可視化テストを実行
     #[cfg(feature = "visualize-allocator")]
     {
+        info!("Starting allocator visualization");
         allocator_visualization::run_visualization_tests(&mut writer);
     }
 
@@ -105,7 +111,6 @@ extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
         let _ = writeln!(writer, "System ready.");
     }
 
-    println!("\nKernel main loop started");
     info!("Entering main loop");
 
     // メインループ

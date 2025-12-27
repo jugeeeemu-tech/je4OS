@@ -235,42 +235,17 @@ extern "efiapi" fn efi_main(
 
 /// ELFファイルからカーネルをロード
 fn load_kernel_elf(_image_handle: EfiHandle, boot_services: *mut EfiBootServices) -> u64 {
-    // Loaded Image Protocolを取得してデバイスハンドルを得る
-    let mut loaded_image: *mut EfiLoadedImageProtocol = core::ptr::null_mut();
-    let status = unsafe {
-        ((*boot_services).locate_protocol)(
-            &EFI_LOADED_IMAGE_PROTOCOL_GUID,
-            core::ptr::null_mut(),
-            &mut loaded_image as *mut *mut _ as *mut *mut core::ffi::c_void,
-        )
-    };
-    if status != EFI_SUCCESS {
-        error!("Failed to locate Loaded Image Protocol");
-        return 0;
-    }
-
-    let device_handle = unsafe { (*loaded_image).device_handle };
-
-    // Simple File System Protocolを取得
+    // Simple File System Protocolを直接検索
     let mut sfs: *mut EfiSimpleFileSystemProtocol = core::ptr::null_mut();
     let status = unsafe {
-        let bs_ptr = boot_services as *mut u8;
-        let handle_protocol_offset = 280; // HandleProtocolのオフセット
-        let handle_protocol: extern "efiapi" fn(
-            EfiHandle,
-            *const EfiGuid,
-            *mut *mut core::ffi::c_void,
-        ) -> EfiStatus = core::mem::transmute(
-            *(bs_ptr.add(handle_protocol_offset) as *const usize) as *const (),
-        );
-        handle_protocol(
-            device_handle,
+        ((*boot_services).locate_protocol)(
             &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID,
+            core::ptr::null_mut(),
             &mut sfs as *mut *mut _ as *mut *mut core::ffi::c_void,
         )
     };
     if status != EFI_SUCCESS {
-        error!("Failed to get Simple File System Protocol: 0x{:X}", status);
+        error!("Failed to locate Simple File System Protocol");
         return 0;
     }
 
@@ -278,7 +253,7 @@ fn load_kernel_elf(_image_handle: EfiHandle, boot_services: *mut EfiBootServices
     let mut root: *mut EfiFileProtocol = core::ptr::null_mut();
     let status = unsafe { ((*sfs).open_volume)(sfs, &mut root) };
     if status != EFI_SUCCESS {
-        error!("Failed to open root volume: 0x{:X}", status);
+        error!("Failed to open root volume");
         return 0;
     }
 
@@ -295,12 +270,13 @@ fn load_kernel_elf(_image_handle: EfiHandle, boot_services: *mut EfiBootServices
         )
     };
     if status != EFI_SUCCESS {
-        error!("Failed to open kernel.elf: 0x{:X}", status);
+        error!("Failed to open kernel.elf");
         return 0;
     }
 
-    // ファイルを一時バッファに読み込む (最大2MB)
-    let mut file_buffer = [0u8; 2 * 1024 * 1024];
+    // ファイルを一時バッファに読み込む (最大2MB - staticを使用)
+    static mut FILE_BUFFER: [u8; 2 * 1024 * 1024] = [0; 2 * 1024 * 1024];
+    let file_buffer = unsafe { &mut *core::ptr::addr_of_mut!(FILE_BUFFER) };
     let mut file_size = file_buffer.len();
     let status = unsafe {
         ((*kernel_file).read)(
@@ -315,21 +291,18 @@ fn load_kernel_elf(_image_handle: EfiHandle, boot_services: *mut EfiBootServices
     }
 
     if status != EFI_SUCCESS {
-        error!("Failed to read kernel file: 0x{:X}", status);
+        error!("Failed to read kernel file");
         return 0;
     }
 
-    info!("Kernel file read: {} bytes", file_size);
+    info!("Kernel loaded: {} bytes", file_size);
 
     // ELFヘッダーを検証
     let elf_header = unsafe { &*(file_buffer.as_ptr() as *const Elf64Header) };
     if !elf_header.is_valid() {
-        error!("Invalid ELF header!");
+        error!("Invalid ELF header");
         return 0;
     }
-
-    info!("ELF header valid, entry: 0x{:X}", elf_header.e_entry);
-    info!("Program headers: {} at offset 0x{:X}", elf_header.e_phnum, elf_header.e_phoff);
 
     // プログラムヘッダーを処理してLOADセグメントをメモリにコピー
     for i in 0..elf_header.e_phnum {
@@ -337,11 +310,6 @@ fn load_kernel_elf(_image_handle: EfiHandle, boot_services: *mut EfiBootServices
         let ph = unsafe { &*(file_buffer.as_ptr().add(ph_offset) as *const Elf64ProgramHeader) };
 
         if ph.p_type == PT_LOAD {
-            info!(
-                "Loading segment to 0x{:X}, size: 0x{:X}",
-                ph.p_paddr, ph.p_memsz
-            );
-
             // ファイルからメモリにコピー
             unsafe {
                 let src = file_buffer.as_ptr().add(ph.p_offset as usize);

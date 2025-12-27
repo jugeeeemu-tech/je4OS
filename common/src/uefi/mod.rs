@@ -111,7 +111,13 @@ pub struct EfiBootServices {
         EfiHandle, // ImageHandle
         usize,     // MapKey
     ) -> EfiStatus,
-    _pad3: [usize; 10], // 28-37: その他の関数
+    _pad3: [usize; 8], // 28-35: その他の関数
+    pub handle_protocol: extern "efiapi" fn(
+        EfiHandle,               // Handle
+        *const EfiGuid,          // Protocol
+        *mut *mut core::ffi::c_void, // Interface
+    ) -> EfiStatus,
+    _pad4: [usize; 1], // 37: その他の関数
     pub locate_protocol: extern "efiapi" fn(
         *const EfiGuid,
         *mut core::ffi::c_void,
@@ -122,6 +128,7 @@ pub struct EfiBootServices {
 const _: () = {
     assert!(core::mem::offset_of!(EfiBootServices, get_memory_map) == 56);
     assert!(core::mem::offset_of!(EfiBootServices, exit_boot_services) == 232);
+    assert!(core::mem::offset_of!(EfiBootServices, handle_protocol) == 304);
     assert!(core::mem::offset_of!(EfiBootServices, locate_protocol) == 320);
 };
 
@@ -147,7 +154,7 @@ const _: () = assert!(core::mem::offset_of!(EfiSystemTable, boot_services) == 96
 
 // Simple File System Protocol GUID
 pub const EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID: EfiGuid = EfiGuid {
-    data1: 0x0964e5b22,
+    data1: 0x964e5b22,
     data2: 0x6459,
     data3: 0x11d2,
     data4: [0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b],
