@@ -6,6 +6,8 @@ extern crate alloc;
 // OS カーネル処理
 // アロケータ初期化、可視化テスト、メインループ
 
+mod gdt;
+
 use je4os_common::boot_info::BootInfo;
 use je4os_common::graphics::FramebufferWriter;
 use je4os_common::{allocator, error, info, println, uefi};
@@ -51,6 +53,11 @@ extern "efiapi" fn kernel_main() -> ! {
 /// 実際のカーネルメイン関数 (System V ABI)
 extern "C" fn kernel_main_inner(boot_info: &'static BootInfo) -> ! {
     info!("=== Kernel Started ===");
+
+    // GDTを初期化
+    info!("Initializing GDT...");
+    gdt::init();
+    info!("GDT initialized");
 
     // フレームバッファライターを作成
     let mut writer = FramebufferWriter::new(
