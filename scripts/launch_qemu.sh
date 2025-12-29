@@ -30,6 +30,7 @@ cp target/x86_64-unknown-none/debug/je4os-kernel mnt/kernel.elf
 # QEMU起動
 echo "Launching QEMU..."
 qemu-system-x86_64 \
+    -machine q35 \
     -m 4G \
     -bios /usr/share/ovmf/OVMF.fd \
     -drive format=raw,file=fat:rw:mnt \

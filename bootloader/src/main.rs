@@ -69,8 +69,8 @@ impl PageTable {
 static mut BOOT_PML4: PageTable = PageTable::new();
 static mut BOOT_PDP_LOW: PageTable = PageTable::new();
 static mut BOOT_PDP_HIGH: PageTable = PageTable::new();
-static mut BOOT_PD_LOW: [PageTable; 4] = [PageTable::new(), PageTable::new(), PageTable::new(), PageTable::new()];
-static mut BOOT_PD_HIGH: [PageTable; 4] = [PageTable::new(), PageTable::new(), PageTable::new(), PageTable::new()];
+static mut BOOT_PD_LOW: [PageTable; 8] = [PageTable::new(), PageTable::new(), PageTable::new(), PageTable::new(), PageTable::new(), PageTable::new(), PageTable::new(), PageTable::new()];
+static mut BOOT_PD_HIGH: [PageTable; 8] = [PageTable::new(), PageTable::new(), PageTable::new(), PageTable::new(), PageTable::new(), PageTable::new(), PageTable::new(), PageTable::new()];
 
 /// ブートローダー用の初期ページテーブルをセットアップ
 unsafe fn setup_initial_page_tables() -> u64 {
@@ -84,8 +84,8 @@ unsafe fn setup_initial_page_tables() -> u64 {
         // PML4[256] -> PDP_HIGH (高位アドレス: 0xFFFF800000000000-)
         BOOT_PML4.entries[256] = &raw const BOOT_PDP_HIGH as u64 | flags;
 
-        // 低位: 最初の4GBをアイデンティティマッピング
-        for i in 0..4 {
+        // 低位: 最初の8GBをアイデンティティマッピング
+        for i in 0..8 {
             BOOT_PDP_LOW.entries[i] = &raw const BOOT_PD_LOW[i] as u64 | flags;
 
             for j in 0..512 {
@@ -94,8 +94,8 @@ unsafe fn setup_initial_page_tables() -> u64 {
             }
         }
 
-        // 高位: 最初の4GBを0xFFFF800000000000+にマッピング
-        for i in 0..4 {
+        // 高位: 最初の8GBを0xFFFF800000000000+にマッピング
+        for i in 0..8 {
             BOOT_PDP_HIGH.entries[i] = &raw const BOOT_PD_HIGH[i] as u64 | flags;
 
             for j in 0..512 {

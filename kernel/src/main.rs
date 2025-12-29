@@ -11,6 +11,7 @@ mod apic;
 mod gdt;
 mod idt;
 mod paging;
+mod pci;
 mod pit;
 mod timer;
 
@@ -133,6 +134,9 @@ extern "C" fn kernel_main_inner(boot_info_ptr: &'static BootInfo) -> ! {
 
     // ACPI を初期化
     acpi::init(&boot_info);
+
+    // PCIバスをスキャン
+    pci::scan_pci_bus();
 
     // Local APICを初期化
     info!("Initializing Local APIC...");

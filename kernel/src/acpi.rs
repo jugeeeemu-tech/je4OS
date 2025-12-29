@@ -121,6 +121,26 @@ struct Madt {
     // この後にエントリが続く
 }
 
+/// MCFG (Memory Mapped Configuration) テーブル
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy)]
+struct Mcfg {
+    header: AcpiTableHeader,
+    reserved: u64,
+    // この後に Configuration Space Base Address Allocation Structures が続く
+}
+
+/// MCFG Configuration Space Base Address Allocation Structure
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy)]
+pub struct McfgEntry {
+    pub base_address: u64,
+    pub pci_segment_group: u16,
+    pub start_bus: u8,
+    pub end_bus: u8,
+    reserved: u32,
+}
+
 impl Rsdp {
     /// シグネチャが正しいか確認
     fn is_valid_signature(&self) -> bool {
@@ -242,6 +262,10 @@ fn parse_xsdt(xsdt_phys_addr: u64) {
         if table_header.signature_str() == "APIC" {
             parse_madt(table_phys_addr);
         }
+        // MCFG テーブルを見つけたら解析
+        else if table_header.signature_str() == "MCFG" {
+            parse_mcfg(table_phys_addr);
+        }
     }
 }
 
@@ -290,6 +314,10 @@ fn parse_rsdt(rsdt_phys_addr: u64) {
         // APIC (MADT) テーブルを見つけたら解析
         if table_header.signature_str() == "APIC" {
             parse_madt(table_phys_addr);
+        }
+        // MCFG テーブルを見つけたら解析
+        else if table_header.signature_str() == "MCFG" {
+            parse_mcfg(table_phys_addr);
         }
     }
 }
@@ -381,4 +409,60 @@ fn parse_madt(madt_phys_addr: u64) {
     }
 
     info!("MADT Summary: {} CPU(s), {} I/O APIC(s)", cpu_count, io_apic_count);
+}
+
+/// MCFG (Memory Mapped Configuration) を解析
+fn parse_mcfg(mcfg_phys_addr: u64) {
+    if mcfg_phys_addr == 0 {
+        return;
+    }
+
+    // 物理アドレスを高位仮想アドレスに変換
+    let mcfg_virt_addr = KERNEL_VIRTUAL_BASE + mcfg_phys_addr;
+    let mcfg = unsafe { &*(mcfg_virt_addr as *const Mcfg) };
+
+    // チェックサムを検証
+    if !mcfg.header.verify_checksum() {
+        info!("MCFG checksum verification failed");
+        return;
+    }
+
+    // packed struct のフィールドはローカル変数にコピー
+    let table_length = mcfg.header.length;
+
+    info!("MCFG found:");
+
+    // エントリの開始位置と終了位置を計算
+    let mcfg_header_size = core::mem::size_of::<Mcfg>();
+    let entries_start = mcfg_virt_addr + mcfg_header_size as u64;
+    let entries_end = mcfg_virt_addr + table_length as u64;
+
+    let entry_size = core::mem::size_of::<McfgEntry>();
+    let entry_count = (table_length as usize - mcfg_header_size) / entry_size;
+
+    info!("  Configuration Space Entries: {}", entry_count);
+
+    let mut current_addr = entries_start;
+    let mut index = 0;
+
+    while current_addr < entries_end {
+        let entry = unsafe { &*(current_addr as *const McfgEntry) };
+
+        // packed struct のフィールドはローカル変数にコピー
+        let base_addr = entry.base_address;
+        let segment = entry.pci_segment_group;
+        let start_bus = entry.start_bus;
+        let end_bus = entry.end_bus;
+
+        info!(
+            "  [{}] Base: 0x{:016X}, Segment: {}, Buses: {}-{}",
+            index, base_addr, segment, start_bus, end_bus
+        );
+
+        // PCIモジュールにMMCONFIG情報を通知
+        crate::pci::set_mmconfig(base_addr, segment, start_bus, end_bus);
+
+        current_addr += entry_size as u64;
+        index += 1;
+    }
 }
