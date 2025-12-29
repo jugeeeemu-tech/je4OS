@@ -143,6 +143,12 @@ extern "C" fn timer_interrupt_handler() {
         // 実際のハンドラを呼び出し
         "call {timer_handler_inner}",
 
+        // 割り込み復帰前処理（need_reschedチェック & スケジューリング）
+        // Linux風のアプローチ：割り込みハンドラはフラグをセットするだけで、
+        // 実際のスケジューリングは割り込み復帰時に行う
+        // RFLAGSの保存・復元はswitch_context()内部で自動的に処理される
+        "call {check_resched}",
+
         // レジスタを復元
         "pop r11",
         "pop r10",
@@ -154,11 +160,20 @@ extern "C" fn timer_interrupt_handler() {
         "pop rcx",
         "pop rax",
 
-        // 割り込みから復帰
+        // 割り込みから復帰（スタック上のRFLAGSが復元される）
         "iretq",
 
         timer_handler_inner = sym timer_handler_inner,
+        check_resched = sym check_resched_on_interrupt_exit_wrapper,
     )
+}
+
+/// 割り込み復帰時のスケジューリングチェック（ラッパー関数）
+///
+/// need_reschedフラグがセットされている場合、スケジューラを呼び出します。
+/// RFLAGSの保存・復元はswitch_context()内部で自動的に処理されます。
+extern "C" fn check_resched_on_interrupt_exit_wrapper() {
+    crate::task::check_resched_on_interrupt_exit();
 }
 
 /// タイマー割り込みハンドラの実装
@@ -168,6 +183,15 @@ extern "C" fn timer_handler_inner() {
 
     // 期限切れタイマーをチェック（ペンディングキューに移動するだけ）
     timer::check_timers();
+
+    // 現在のタスクのvruntimeを更新（CFS風スケジューリング）
+    // タイマー周波数は100Hzなので、1tick = 10ms = 10,000,000ns
+    const TIMER_PERIOD_NS: u64 = 10_000_000;
+    crate::task::update_current_task_vruntime(TIMER_PERIOD_NS);
+
+    // スケジューリングが必要であることを示すフラグをセット
+    // 実際のスケジューリングは割り込み復帰時に行われる（Linux風）
+    crate::task::set_need_resched();
 
     // EOI (End of Interrupt) を送信
     apic::send_eoi();

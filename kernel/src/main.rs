@@ -13,6 +13,7 @@ mod idt;
 mod paging;
 mod pci;
 mod pit;
+mod task;
 mod timer;
 
 use je4os_common::boot_info::BootInfo;
@@ -68,6 +69,102 @@ fn panic(info: &PanicInfo) -> ! {
 fn hlt() {
     unsafe {
         asm!("hlt");
+    }
+}
+
+// =============================================================================
+// タスクエントリポイント
+// =============================================================================
+
+/// アイドルタスク：CPUを休止状態にし続ける
+extern "C" fn idle_task() -> ! {
+    info!("[Idle] Idle task started");
+    fb_writeln("[Idle] Started");
+    loop {
+        unsafe {
+            asm!("hlt");
+        }
+    }
+}
+
+/// タスク1：カウンタを表示し続ける（優先度：高）
+extern "C" fn task1() -> ! {
+    info!("[Task1] Started (High Priority)");
+
+    let mut counter = 0u64;
+    loop {
+        info!("[Task1] Counter: {}", counter);
+
+        // 固定位置（X=400, Y=500）にカウンタを表示
+        {
+            let mut fb = GLOBAL_FRAMEBUFFER.lock();
+            if let Some(writer) = fb.as_mut() {
+                writer.set_position(400, 500);
+                writer.clear_area(30, 0x00000000); // 30文字分、黒色でクリア
+            }
+        }
+        fb_writeln(&alloc::format!("[Task1 High] Count: {}", counter));
+
+        counter += 1;
+
+        // 忙しいループで時間を消費
+        for _ in 0..1_000_000 {
+            core::hint::spin_loop();
+        }
+    }
+}
+
+/// タスク2：カウンタを表示し続ける（優先度：中）
+extern "C" fn task2() -> ! {
+    info!("[Task2] Started (Medium Priority)");
+
+    let mut counter = 0u64;
+    loop {
+        info!("[Task2] Counter: {}", counter);
+
+        // 固定位置（X=400, Y=520）にカウンタを表示
+        {
+            let mut fb = GLOBAL_FRAMEBUFFER.lock();
+            if let Some(writer) = fb.as_mut() {
+                writer.set_position(400, 520);
+                writer.clear_area(30, 0x00000000); // 30文字分、黒色でクリア
+            }
+        }
+        fb_writeln(&alloc::format!("[Task2 Med ] Count: {}", counter));
+
+        counter += 1;
+
+        // 忙しいループで時間を消費
+        for _ in 0..1_000_000 {
+            core::hint::spin_loop();
+        }
+    }
+}
+
+/// タスク3：カウンタを表示し続ける（優先度：低）
+extern "C" fn task3() -> ! {
+    info!("[Task3] Started (Low Priority)");
+
+    let mut counter = 0u64;
+    loop {
+        info!("[Task3] Counter: {}", counter);
+
+        // 固定位置（X=400, Y=540）にカウンタを表示
+        {
+            let mut fb = GLOBAL_FRAMEBUFFER.lock();
+            if let Some(writer) = fb.as_mut() {
+                writer.set_position(400, 540);
+                writer.clear_area(30, 0x00000000); // 30文字分、黒色でクリア
+            }
+        }
+        fb_writeln(&alloc::format!("[Task3 Low ] Count: {}", counter));
+
+        counter += 1;
+
+        // 忙しいループで時間を消費
+        for _ in 0..1_000_000 {
+            core::hint::spin_loop();
+        }
     }
 }
 
@@ -131,6 +228,9 @@ extern "C" fn kernel_main_inner(boot_info_ptr: &'static BootInfo) -> ! {
     info!("Initializing IDT...");
     idt::init();
     info!("IDT initialized");
+
+    // タスクシステムを初期化
+    task::init();
 
     // ACPI を初期化
     acpi::init(&boot_info);
@@ -200,11 +300,50 @@ extern "C" fn kernel_main_inner(boot_info_ptr: &'static BootInfo) -> ! {
         info!("Initializing APIC Timer...");
         apic::init_timer(TIMER_FREQUENCY_HZ as u32);
 
-        // すべての初期化が完了したので、割り込みを有効化
+        // =================================================================
+        // プリエンプティブマルチタスキングのタスクを作成（割り込み無効状態で）
+        // =================================================================
+        info!("Creating tasks for preemptive multitasking...");
+
+        // アイドルタスク（優先度：最低）
+        let idle = Box::new(task::Task::new_idle("Idle", idle_task));
+        task::add_task(*idle);
+
+        // ワーカータスク1（優先度：高）
+        let t1 = Box::new(task::Task::new("Task1", task::priority::DEFAULT + 10, task1));
+        task::add_task(*t1);
+
+        // ワーカータスク2（優先度：中）
+        let t2 = Box::new(task::Task::new("Task2", task::priority::DEFAULT, task2));
+        task::add_task(*t2);
+
+        // ワーカータスク3（優先度：低）
+        let t3 = Box::new(task::Task::new("Task3", task::priority::MIN, task3));
+        task::add_task(*t3);
+
+        info!("All tasks created. Setting up kernel main task...");
+
+        // kernel_main_innerを表すタスクを作成し、CURRENT_TASKに設定
+        // 注意：entry_pointとしてidle_taskを指定しているが、これは使われない
+        // このタスクはold_contextとして最初のswitch_context()で保存される側なので、
+        // 初期Contextの値（rip=task_wrapper, rdi=idle_task）は上書きされる
+        // 保存されるripは「schedule()から戻るアドレス」になる
+        let kernel_main = Box::new(task::Task::new("KernelMain", task::priority::DEFAULT, idle_task));
+        task::set_current_task(*kernel_main);
+        info!("Kernel main task set as current");
+
+        // 最初のタスクにスケジュール
+        // これ以降、タイマー割り込みで自動的にタスクが切り替わる
+        info!("Calling schedule()...");
+        task::schedule();
+
+        // kernel_main_innerタスクが再スケジュールされた時、ここに戻ってくる
+        // 割り込みを有効化（schedule()から戻ってきた時点では割り込み無効）
         unsafe {
             asm!("sti");
         }
-        info!("Interrupts enabled");
+
+        info!("Returned from scheduler! KernelMain task rescheduled, entering idle loop...");
 
         // ヒープ初期化後、フレームバッファに情報を表示
         // ブートローダーの出力の後に配置（時系列順）
