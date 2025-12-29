@@ -6,6 +6,7 @@ extern crate alloc;
 // OS カーネル処理
 // アロケータ初期化、可視化テスト、メインループ
 
+mod acpi;
 mod apic;
 mod gdt;
 mod idt;
@@ -129,6 +130,9 @@ extern "C" fn kernel_main_inner(boot_info_ptr: &'static BootInfo) -> ! {
     info!("Initializing IDT...");
     idt::init();
     info!("IDT initialized");
+
+    // ACPI を初期化
+    acpi::init(&boot_info);
 
     // Local APICを初期化
     info!("Initializing Local APIC...");

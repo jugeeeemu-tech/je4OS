@@ -193,8 +193,26 @@ pub fn send_eoi() {
     }
 }
 
+/// レガシーPIC（8259 PIC）を無効化
+/// APICを使う場合、古いPICとの競合を避けるために無効化が必要
+fn disable_legacy_pic() {
+    unsafe {
+        // マスターPICとスレーブPICの両方のIMR（Interrupt Mask Register）に
+        // 0xFFを書き込んで、すべての割り込みをマスク
+        asm!(
+            "mov al, 0xFF",
+            "out 0x21, al",  // マスターPIC IMR
+            "out 0xA1, al",  // スレーブPIC IMR
+            out("al") _,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+}
+
 /// Local APICを初期化
 pub fn init() {
+    // まずレガシーPICを無効化
+    disable_legacy_pic();
     enable_apic();
     // タイマーは別途 init_timer() で初期化
 }

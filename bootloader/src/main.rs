@@ -214,7 +214,7 @@ extern "efiapi" fn efi_main(
         )
     };
 
-    // BOOT_INFOを固定アドレス（0xF000）に配置
+    // BOOT_INFOを固定アドレス（0x90000）に配置
     let boot_info = unsafe { &mut *(BOOT_INFO_ADDR as *mut BootInfo) };
     *boot_info = BootInfo::new();
 
@@ -226,6 +226,35 @@ extern "efiapi" fn efi_main(
         height,
         stride: width,
     };
+
+    // RSDP (ACPI Root System Description Pointer) を UEFI Configuration Table から取得
+    unsafe {
+        let config_table_ptr = (*system_table).configuration_table as *const EfiConfigurationTable;
+        let num_entries = (*system_table).number_of_table_entries;
+
+        let mut rsdp_addr = 0u64;
+        for i in 0..num_entries {
+            let entry = &*config_table_ptr.add(i);
+
+            // ACPI 2.0 を優先的に検索
+            if entry.vendor_guid.equals(&EFI_ACPI_20_TABLE_GUID) {
+                rsdp_addr = entry.vendor_table;
+                info!("Found ACPI 2.0 RSDP at 0x{:016X}", rsdp_addr);
+                break;
+            }
+            // ACPI 1.0 をフォールバック
+            else if entry.vendor_guid.equals(&EFI_ACPI_TABLE_GUID) {
+                rsdp_addr = entry.vendor_table;
+                info!("Found ACPI 1.0 RSDP at 0x{:016X}", rsdp_addr);
+            }
+        }
+
+        if rsdp_addr == 0 {
+            info!("RSDP not found in UEFI Configuration Table");
+        }
+
+        boot_info.rsdp_address = rsdp_addr;
+    }
 
     if status == EFI_SUCCESS {
         let entry_count = map_size / descriptor_size;

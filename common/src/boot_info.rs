@@ -27,6 +27,7 @@ pub struct BootInfo {
     pub framebuffer: FramebufferInfo,
     pub memory_map: [MemoryRegion; MAX_MEMORY_REGIONS],
     pub memory_map_count: usize,
+    pub rsdp_address: u64,
 }
 
 impl BootInfo {
@@ -45,6 +46,7 @@ impl BootInfo {
                 region_type: 0,
             }; MAX_MEMORY_REGIONS],
             memory_map_count: 0,
+            rsdp_address: 0,
         }
     }
 }

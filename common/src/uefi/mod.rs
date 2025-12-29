@@ -15,12 +15,38 @@ pub struct EfiGuid {
     pub data4: [u8; 8],
 }
 
+impl EfiGuid {
+    /// GUIDを比較
+    pub fn equals(&self, other: &EfiGuid) -> bool {
+        self.data1 == other.data1
+            && self.data2 == other.data2
+            && self.data3 == other.data3
+            && self.data4 == other.data4
+    }
+}
+
 // Graphics Output Protocol GUID
 pub const EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID: EfiGuid = EfiGuid {
     data1: 0x9042a9de,
     data2: 0x23dc,
     data3: 0x4a38,
     data4: [0x96, 0xfb, 0x7a, 0xde, 0xd0, 0x80, 0x51, 0x6a],
+};
+
+// ACPI 2.0 Table GUID
+pub const EFI_ACPI_20_TABLE_GUID: EfiGuid = EfiGuid {
+    data1: 0x8868e871,
+    data2: 0xe4f1,
+    data3: 0x11d3,
+    data4: [0xbc, 0x22, 0x00, 0x80, 0xc7, 0x3c, 0x88, 0x81],
+};
+
+// ACPI 1.0 Table GUID
+pub const EFI_ACPI_TABLE_GUID: EfiGuid = EfiGuid {
+    data1: 0xeb9d2d30,
+    data2: 0x2d88,
+    data3: 0x11d3,
+    data4: [0x9a, 0x16, 0x00, 0x90, 0x27, 0x3f, 0xc1, 0x4d],
 };
 
 // テーブルヘッダ
@@ -151,6 +177,13 @@ pub struct EfiSystemTable {
 }
 
 const _: () = assert!(core::mem::offset_of!(EfiSystemTable, boot_services) == 96);
+
+// Configuration Table Entry
+#[repr(C)]
+pub struct EfiConfigurationTable {
+    pub vendor_guid: EfiGuid,
+    pub vendor_table: u64,
+}
 
 // Simple File System Protocol GUID
 pub const EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID: EfiGuid = EfiGuid {
