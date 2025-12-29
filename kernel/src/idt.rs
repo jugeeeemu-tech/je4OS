@@ -66,6 +66,26 @@ impl IdtEntry {
             reserved: 0,
         }
     }
+
+    /// IST付き割り込みゲートを作成
+    ///
+    /// # Arguments
+    /// * `handler` - 割り込みハンドラ関数のアドレス
+    /// * `selector` - コードセグメントセレクタ（通常はカーネルコードセグメント）
+    /// * `dpl` - Descriptor Privilege Level (0 = カーネル, 3 = ユーザー)
+    /// * `ist_index` - Interrupt Stack Table インデックス (1-7、0は使用しない)
+    const fn new_with_ist(handler: usize, selector: u16, dpl: u8, ist_index: u8) -> Self {
+        Self {
+            offset_low: (handler & 0xFFFF) as u16,
+            selector,
+            ist: ist_index & 0x07, // 下位3ビットのみ使用
+            // Present (bit 7) | DPL (bits 5-6) | Gate Type (0xE = Interrupt Gate)
+            attributes: 0x80 | ((dpl & 0b11) << 5) | 0x0E,
+            offset_middle: ((handler >> 16) & 0xFFFF) as u16,
+            offset_high: ((handler >> 32) & 0xFFFFFFFF) as u32,
+            reserved: 0,
+        }
+    }
 }
 
 /// IDT（Interrupt Descriptor Table）
@@ -199,7 +219,7 @@ extern "C" fn divide_error_handler_inner() {
     println!("========================================");
     println!("EXCEPTION: Divide Error (#DE)");
     println!("========================================");
-    println!("ゼロ除算または除算結果のオーバーフローが発生しました。");
+    println!("Division by zero or division overflow occurred.");
     println!("");
 
     // 停止
@@ -246,7 +266,7 @@ extern "C" fn debug_exception_handler_inner() {
     println!("========================================");
     println!("EXCEPTION: Debug Exception (#DB)");
     println!("========================================");
-    println!("デバッグ例外が発生しました。");
+    println!("Debug exception occurred.");
     println!("");
 
     loop {
@@ -292,11 +312,11 @@ extern "C" fn breakpoint_handler_inner() {
     println!("========================================");
     println!("EXCEPTION: Breakpoint (#BP)");
     println!("========================================");
-    println!("ブレークポイント例外が発生しました。");
+    println!("Breakpoint exception occurred.");
     println!("");
 
     // ブレークポイントは通常、続行可能
-    println!("デバッガが接続されていれば、ここで制御が移ります。");
+    println!("Control will transfer to debugger if attached.");
 }
 
 /// Invalid Opcode (#UD, ベクタ6) ハンドラ
@@ -337,7 +357,7 @@ extern "C" fn invalid_opcode_handler_inner() {
     println!("========================================");
     println!("EXCEPTION: Invalid Opcode (#UD)");
     println!("========================================");
-    println!("無効な命令を実行しようとしました。");
+    println!("Attempted to execute an invalid or unsupported instruction.");
     println!("");
 
     loop {
@@ -389,15 +409,47 @@ extern "C" fn double_fault_handler() {
 }
 
 extern "C" fn double_fault_handler_inner(error_code: u64) {
-    println!("\n\n");
-    println!("========================================");
-    println!("FATAL: Double Fault (#DF)");
-    println!("========================================");
-    println!("例外ハンドラ内で別の例外が発生しました。");
-    println!("エラーコード: 0x{:X}", error_code);
-    println!("");
-    println!("システムは重大なエラー状態にあります。");
-    println!("");
+    // CR2レジスタから最後のPage Fault違反アドレスを取得
+    // Double FaultはPage Fault → Page Faultで発生するため、CR2には最初のPage Faultアドレスが残っている
+    let fault_addr: u64;
+    unsafe {
+        asm!("mov {}, cr2", out(reg) fault_addr, options(nomem, nostack));
+    }
+
+    // Guard Pageアクセスの検知（スタックオーバーフロー）
+    let guard_page_addr = unsafe {
+        let stack_addr = core::ptr::addr_of!(crate::paging::KERNEL_STACK) as u64;
+        stack_addr - crate::paging::PAGE_SIZE as u64
+    };
+
+    // CR2がGuard Page範囲内であれば、スタックオーバーフローと判定
+    if fault_addr >= guard_page_addr && fault_addr < guard_page_addr + crate::paging::PAGE_SIZE as u64 {
+        println!("\n\n");
+        println!("========================================");
+        println!("FATAL: STACK OVERFLOW DETECTED");
+        println!("========================================");
+        println!("Kernel stack overflow occurred!");
+        println!("");
+        println!("Guard Page address: 0x{:016X}", guard_page_addr);
+        println!("Fault address (CR2): 0x{:016X}", fault_addr);
+        println!("Error code: 0x{:X}", error_code);
+        println!("");
+        println!("The kernel stack has been exhausted.");
+        println!("Possible causes: infinite recursion or large local variables.");
+        println!("");
+    } else {
+        // 通常のDouble Fault
+        println!("\n\n");
+        println!("========================================");
+        println!("FATAL: Double Fault (#DF)");
+        println!("========================================");
+        println!("An exception occurred within an exception handler.");
+        println!("Error code: 0x{:X}", error_code);
+        println!("Last Page Fault address (CR2): 0x{:016X}", fault_addr);
+        println!("");
+        println!("System is in a critical error state.");
+        println!("");
+    }
 
     // 永久停止
     loop {
@@ -447,8 +499,8 @@ extern "C" fn general_protection_fault_handler_inner(error_code: u64) {
     println!("========================================");
     println!("EXCEPTION: General Protection Fault (#GP)");
     println!("========================================");
-    println!("セグメント違反または特権レベル違反が発生しました。");
-    println!("エラーコード: 0x{:X}", error_code);
+    println!("Segment violation or privilege level violation occurred.");
+    println!("Error code: 0x{:X}", error_code);
 
     // エラーコードの詳細を解析
     if error_code != 0 {
@@ -457,7 +509,7 @@ extern "C" fn general_protection_fault_handler_inner(error_code: u64) {
         let index = (error_code >> 3) & 0x1FFF;
 
         println!("");
-        println!("エラーコード詳細:");
+        println!("Error code details:");
         println!("  - External: {}", if external { "Yes" } else { "No" });
         println!("  - Table: {}", match table {
             0 => "GDT",
@@ -480,7 +532,7 @@ extern "C" fn general_protection_fault_handler_inner(error_code: u64) {
 #[unsafe(naked)]
 extern "C" fn page_fault_handler() {
     core::arch::naked_asm!(
-        // エラーコードをRDIレジスタに移動
+        // エラーコードをRDIレジスタに移動（System V ABIの第1引数）
         "pop rdi",
 
         // レジスタを保存
@@ -493,7 +545,7 @@ extern "C" fn page_fault_handler() {
         "push r10",
         "push r11",
 
-        // 実際のハンドラを呼び出し
+        // 実際のハンドラを呼び出し（RDIにエラーコード）
         "call {handler_inner}",
 
         // レジスタを復元
@@ -523,18 +575,18 @@ extern "C" fn page_fault_handler_inner(error_code: u64) {
     println!("========================================");
     println!("EXCEPTION: Page Fault (#PF)");
     println!("========================================");
-    println!("無効なメモリアクセスが発生しました。");
-    println!("違反アドレス: 0x{:016X}", fault_addr);
-    println!("エラーコード: 0x{:X}", error_code);
+    println!("Invalid memory access occurred.");
+    println!("Fault address: 0x{:016X}", fault_addr);
+    println!("Error code: 0x{:X}", error_code);
 
     // エラーコードの詳細を解析
     println!("");
-    println!("エラーコード詳細:");
-    println!("  - Present: {}", if error_code & 0x01 != 0 { "Yes (権限違反)" } else { "No (ページ未マップ)" });
-    println!("  - Write: {}", if error_code & 0x02 != 0 { "Yes (書き込み)" } else { "No (読み込み)" });
-    println!("  - User: {}", if error_code & 0x04 != 0 { "Yes (ユーザーモード)" } else { "No (カーネルモード)" });
+    println!("Error code details:");
+    println!("  - Present: {}", if error_code & 0x01 != 0 { "Yes (protection violation)" } else { "No (page not present)" });
+    println!("  - Write: {}", if error_code & 0x02 != 0 { "Yes (write)" } else { "No (read)" });
+    println!("  - User: {}", if error_code & 0x04 != 0 { "Yes (user mode)" } else { "No (kernel mode)" });
     println!("  - Reserved: {}", if error_code & 0x08 != 0 { "Yes" } else { "No" });
-    println!("  - Instruction: {}", if error_code & 0x10 != 0 { "Yes (命令フェッチ)" } else { "No (データアクセス)" });
+    println!("  - Instruction: {}", if error_code & 0x10 != 0 { "Yes (instruction fetch)" } else { "No (data access)" });
     println!("");
 
     loop {
@@ -554,6 +606,19 @@ fn set_idt_entry(vector: u8, handler: usize) {
     );
 }
 
+/// IST付きIDTエントリを設定
+fn set_idt_entry_with_ist(vector: u8, handler: usize, ist_index: u8) {
+    let mut idt = IDT.lock();
+
+    // カーネルが高位アドレスでリンクされているため、ハンドラアドレスは既に高位
+    idt.entries[vector as usize] = IdtEntry::new_with_ist(
+        handler,
+        gdt::selector::KERNEL_CODE,
+        0, // DPL = 0 (カーネルレベル)
+        ist_index,
+    );
+}
+
 /// IDTを初期化してロード
 pub fn init() {
     // 例外ハンドラを登録
@@ -561,7 +626,8 @@ pub fn init() {
     set_idt_entry(1, debug_exception_handler as usize);     // #DB: Debug Exception
     set_idt_entry(3, breakpoint_handler as usize);          // #BP: Breakpoint
     set_idt_entry(6, invalid_opcode_handler as usize);      // #UD: Invalid Opcode
-    set_idt_entry(8, double_fault_handler as usize);        // #DF: Double Fault
+    // Double FaultハンドラにはIST1を設定（専用スタック使用）
+    set_idt_entry_with_ist(8, double_fault_handler as usize, gdt::DOUBLE_FAULT_IST_INDEX); // #DF: Double Fault
     set_idt_entry(13, general_protection_fault_handler as usize); // #GP: General Protection Fault
     set_idt_entry(14, page_fault_handler as usize);         // #PF: Page Fault
 

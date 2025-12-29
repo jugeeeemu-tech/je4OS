@@ -63,17 +63,24 @@ impl PageTableEntry {
 
     /// エントリを完全に設定（アドレス + フラグ）
     pub fn set(&mut self, addr: u64, flags: u64) {
-        self.set_address(addr);
-        self.set_flags(flags);
+        // 既存のエントリを完全にクリアしてから設定
+        let addr_masked = addr & 0x000F_FFFF_FFFF_F000;
+        self.entry = addr_masked | flags;
     }
 
     /// 物理アドレスを取得
     pub fn get_address(&self) -> u64 {
         self.entry & 0x000F_FFFF_FFFF_F000
     }
+
+    /// エントリの生の値を取得（デバッグ用）
+    pub fn get_raw(&self) -> u64 {
+        self.entry
+    }
 }
 
 /// ページテーブル（PML4, PDP, PD, PTすべてに共通の構造）
+#[derive(Clone, Copy)]
 #[repr(align(4096))]
 pub struct PageTable {
     entries: [PageTableEntry; PAGE_TABLE_ENTRY_COUNT],
@@ -183,6 +190,12 @@ static mut KERNEL_PD_HIGH: [PageTable; 4] = [
     PageTable::new(),
 ];
 
+// Page Table（4GB全体を4KBページでマップするため2,048個のPTが必要）
+// 各PT = 512エントリ × 4KB = 2MB
+// 4GB = 2,048個のPT
+static mut KERNEL_PT_LOW: [PageTable; 2048] = [PageTable::new(); 2048];
+static mut KERNEL_PT_HIGH: [PageTable; 2048] = [PageTable::new(); 2048];
+
 /// ページングシステムを初期化してCR3に設定
 /// 物理メモリの直接マッピング（Direct Mapping）を実装
 /// - 低位アドレス（0-4GB）: identity mapping（互換性のため残す）
@@ -195,6 +208,8 @@ pub fn init() {
         let pdp_high = addr_of_mut!(KERNEL_PDP_HIGH);
         let pd_low = addr_of_mut!(KERNEL_PD_LOW);
         let pd_high = addr_of_mut!(KERNEL_PD_HIGH);
+        let pt_low = addr_of_mut!(KERNEL_PT_LOW);
+        let pt_high = addr_of_mut!(KERNEL_PT_HIGH);
 
         // すべてのテーブルをクリア
         (*pml4).clear();
@@ -203,6 +218,10 @@ pub fn init() {
         for i in 0..4 {
             (*pd_low)[i].clear();
             (*pd_high)[i].clear();
+        }
+        for i in 0..2048 {
+            (*pt_low)[i].clear();
+            (*pt_high)[i].clear();
         }
 
         // 基本フラグ: Present + Writable
@@ -228,18 +247,60 @@ pub fn init() {
             (*pdp_high).entry(i).set((*pd_high)[i].physical_address(), flags);
         }
 
-        // 最初の4GBを両方のアドレス空間にマッピング（2MBページ使用）
-        // 物理アドレス 0x0〜0x100000000を:
-        // - 仮想アドレス 0x0〜0x100000000 (identity)
-        // - 仮想アドレス 0xFFFF_8000_0000_0000〜 (direct mapping)
-        let huge_flags = flags | PageTableFlags::HugePage as u64;
+        // === 4GB全体を4KBページでマッピング ===
+        // 各PD（4個）が512個のPTを参照し、各PTが512個の4KBページをマップ
+        // 合計: 4 × 512 × 512 × 4KB = 4GB
+
+        // 各PDエントリにPTをリンク
         for pd_idx in 0..4 {
             for entry_idx in 0..PAGE_TABLE_ENTRY_COUNT {
-                let physical_addr = ((pd_idx * PAGE_TABLE_ENTRY_COUNT + entry_idx) * 2 * 1024 * 1024) as u64;
-                (*pd_low)[pd_idx].entry(entry_idx).set(physical_addr, huge_flags);
-                (*pd_high)[pd_idx].entry(entry_idx).set(physical_addr, huge_flags);
+                let pt_idx = pd_idx * PAGE_TABLE_ENTRY_COUNT + entry_idx;
+                (*pd_low)[pd_idx].entry(entry_idx).set((*pt_low)[pt_idx].physical_address(), flags);
+                (*pd_high)[pd_idx].entry(entry_idx).set((*pt_high)[pt_idx].physical_address(), flags);
             }
         }
+
+        // 各PTのエントリに4KBページをマップ
+        for pt_idx in 0..2048 {
+            for page_idx in 0..PAGE_TABLE_ENTRY_COUNT {
+                // 物理アドレス = (PT番号 × 2MB) + (ページ番号 × 4KB)
+                let physical_addr = ((pt_idx * PAGE_TABLE_ENTRY_COUNT + page_idx) * PAGE_SIZE) as u64;
+                (*pt_low)[pt_idx].entry(page_idx).set(physical_addr, flags);
+                (*pt_high)[pt_idx].entry(page_idx).set(physical_addr, flags);
+            }
+        }
+
+        // === Guard Page の設定 ===
+        // スタック領域の直前のページをGuard Page（Present=0）に設定
+        let stack_virt_addr = addr_of_mut!(KERNEL_STACK) as u64;
+        let guard_page_virt_addr = stack_virt_addr - PAGE_SIZE as u64;
+        let guard_page_phys_addr = guard_page_virt_addr - KERNEL_VIRTUAL_BASE;
+
+        // Guard PageのPTエントリを特定
+        // higher-half kernelの場合、カーネルベースからのオフセットを使ってインデックスを計算
+        // 仮想アドレス全体から計算すると高位ビットが影響するため、物理オフセットから計算
+        let physical_offset = guard_page_virt_addr - KERNEL_VIRTUAL_BASE;
+
+        // 4GB全体でのページ番号を計算
+        let page_num = (physical_offset >> 12) as usize;
+
+        // PT配列内のインデックスとPT内のエントリ番号を計算
+        let pt_array_idx = page_num / PAGE_TABLE_ENTRY_COUNT;
+        let page_idx_in_pt = page_num % PAGE_TABLE_ENTRY_COUNT;
+
+        // Guard PageのPTエントリをPresent=0に設定（アクセス時にPage Faultが発生）
+        (*pt_high)[pt_array_idx].entry(page_idx_in_pt).set(guard_page_phys_addr, 0);
+
+        // デバッグ: Guard Page設定を確認
+        use je4os_common::info;
+        info!("Guard Page setup:");
+        info!("  Virtual address: 0x{:016X}", guard_page_virt_addr);
+        info!("  Physical offset: 0x{:X}", physical_offset);
+        info!("  Page number: {}", page_num);
+        info!("  PT array index: {}", pt_array_idx);
+        info!("  Entry in PT: {}", page_idx_in_pt);
+        info!("  Entry value: 0x{:016X}", (*pt_high)[pt_array_idx].entry(page_idx_in_pt).get_raw());
+        info!("  Entry is Present: {}", (*pt_high)[pt_array_idx].entry(page_idx_in_pt).get_raw() & 1 != 0);
 
         // CR3レジスタにPML4のアドレスを設定
         let pml4_addr = (*pml4).physical_address();
