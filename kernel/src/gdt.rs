@@ -7,6 +7,24 @@ use core::arch::asm;
 use crate::paging::KERNEL_VIRTUAL_BASE;
 use je4os_common::info;
 
+/// GDT操作のエラー型
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GdtError {
+    /// 初期化失敗
+    InitFailed,
+    /// 無効なアドレス
+    InvalidAddress,
+}
+
+impl core::fmt::Display for GdtError {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        match self {
+            GdtError::InitFailed => write!(f, "GDT initialization failed"),
+            GdtError::InvalidAddress => write!(f, "Invalid GDT address"),
+        }
+    }
+}
+
 /// 現在高位アドレス空間で実行されているかチェック
 fn is_higher_half() -> bool {
     let rip: u64;
@@ -245,7 +263,7 @@ pub mod selector {
 pub const DOUBLE_FAULT_IST_INDEX: u8 = 1;
 
 /// GDTを初期化してロード
-pub fn init() {
+pub fn init() -> Result<(), GdtError> {
     unsafe {
         // TSSを初期化（Double Fault用のISTスタックを設定）
         let double_fault_stack_top = (&raw const DOUBLE_FAULT_STACK as u64)
@@ -313,4 +331,5 @@ pub fn init() {
 
         info!("TSS loaded into TR register");
     }
+    Ok(())
 }

@@ -12,6 +12,24 @@ use crate::gdt;
 use crate::timer;
 use crate::paging::KERNEL_VIRTUAL_BASE;
 
+/// IDT操作のエラー型
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdtError {
+    /// 初期化失敗
+    InitFailed,
+    /// 無効なアドレス
+    InvalidAddress,
+}
+
+impl core::fmt::Display for IdtError {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        match self {
+            IdtError::InitFailed => write!(f, "IDT initialization failed"),
+            IdtError::InvalidAddress => write!(f, "Invalid IDT address"),
+        }
+    }
+}
+
 /// 現在高位アドレス空間で実行されているかチェック
 fn is_higher_half() -> bool {
     let rip: u64;
@@ -644,7 +662,7 @@ fn set_idt_entry_with_ist(vector: u8, handler: usize, ist_index: u8) {
 }
 
 /// IDTを初期化してロード
-pub fn init() {
+pub fn init() -> Result<(), IdtError> {
     // 例外ハンドラを登録
     set_idt_entry(0, divide_error_handler as usize);        // #DE: Divide Error
     set_idt_entry(1, debug_exception_handler as usize);     // #DB: Debug Exception
@@ -677,4 +695,5 @@ pub fn init() {
     }
 
     info!("IDT initialized with exception handlers");
+    Ok(())
 }

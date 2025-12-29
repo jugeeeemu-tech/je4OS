@@ -7,6 +7,7 @@ extern crate alloc;
 // アロケータ初期化、可視化テスト、メインループ
 
 mod acpi;
+mod addr;
 mod apic;
 mod gdt;
 mod idt;
@@ -208,7 +209,7 @@ extern "C" fn kernel_main_inner(boot_info_ptr: &'static BootInfo) -> ! {
 
     // GDTを初期化
     info!("Initializing GDT...");
-    gdt::init();
+    gdt::init().expect("Failed to initialize GDT");
     info!("GDT initialized");
 
     // ブートローダーが既にページングを設定し、高位アドレスで起動している
@@ -216,17 +217,17 @@ extern "C" fn kernel_main_inner(boot_info_ptr: &'static BootInfo) -> ! {
 
     // カーネル用のページテーブルを作成（高位アドレスのみ、低位は自動的にアンマップ）
     info!("Creating kernel page tables...");
-    paging::init();
+    paging::init().expect("Failed to initialize paging system");
     info!("Kernel page tables created and loaded (low addresses now unmapped)");
 
     // GDTを高位アドレスで再ロード（念のため）
     info!("Reloading GDT...");
-    gdt::init();
+    gdt::init().expect("Failed to reload GDT");
     info!("GDT reloaded");
 
     // IDTを初期化
     info!("Initializing IDT...");
-    idt::init();
+    idt::init().expect("Failed to initialize IDT");
     info!("IDT initialized");
 
     // タスクシステムを初期化
@@ -245,7 +246,7 @@ extern "C" fn kernel_main_inner(boot_info_ptr: &'static BootInfo) -> ! {
 
     // APIC Timerをキャリブレーション（割り込み無効状態で実行）
     info!("Calibrating APIC Timer...");
-    apic::calibrate_timer();
+    apic::calibrate_timer().expect("Failed to calibrate APIC Timer");
 
     // グローバルフレームバッファを初期化（表示はヒープ初期化後）
     init_global_framebuffer(
@@ -298,7 +299,7 @@ extern "C" fn kernel_main_inner(boot_info_ptr: &'static BootInfo) -> ! {
 
         // APIC Timerを初期化（100Hz）
         info!("Initializing APIC Timer...");
-        apic::init_timer(TIMER_FREQUENCY_HZ as u32);
+        apic::init_timer(TIMER_FREQUENCY_HZ as u32).expect("Failed to initialize APIC Timer");
 
         // =================================================================
         // プリエンプティブマルチタスキングのタスクを作成（割り込み無効状態で）
@@ -306,19 +307,23 @@ extern "C" fn kernel_main_inner(boot_info_ptr: &'static BootInfo) -> ! {
         info!("Creating tasks for preemptive multitasking...");
 
         // アイドルタスク（優先度：最低）
-        let idle = Box::new(task::Task::new_idle("Idle", idle_task));
+        let idle = Box::new(task::Task::new_idle("Idle", idle_task)
+            .expect("Failed to create idle task"));
         task::add_task(*idle);
 
         // ワーカータスク1（優先度：高）
-        let t1 = Box::new(task::Task::new("Task1", task::priority::DEFAULT + 10, task1));
+        let t1 = Box::new(task::Task::new("Task1", task::priority::DEFAULT + 10, task1)
+            .expect("Failed to create Task1"));
         task::add_task(*t1);
 
         // ワーカータスク2（優先度：中）
-        let t2 = Box::new(task::Task::new("Task2", task::priority::DEFAULT, task2));
+        let t2 = Box::new(task::Task::new("Task2", task::priority::DEFAULT, task2)
+            .expect("Failed to create Task2"));
         task::add_task(*t2);
 
         // ワーカータスク3（優先度：低）
-        let t3 = Box::new(task::Task::new("Task3", task::priority::MIN, task3));
+        let t3 = Box::new(task::Task::new("Task3", task::priority::MIN, task3)
+            .expect("Failed to create Task3"));
         task::add_task(*t3);
 
         info!("All tasks created. Setting up kernel main task...");
@@ -328,7 +333,8 @@ extern "C" fn kernel_main_inner(boot_info_ptr: &'static BootInfo) -> ! {
         // このタスクはold_contextとして最初のswitch_context()で保存される側なので、
         // 初期Contextの値（rip=task_wrapper, rdi=idle_task）は上書きされる
         // 保存されるripは「schedule()から戻るアドレス」になる
-        let kernel_main = Box::new(task::Task::new("KernelMain", task::priority::DEFAULT, idle_task));
+        let kernel_main = Box::new(task::Task::new("KernelMain", task::priority::DEFAULT, idle_task)
+            .expect("Failed to create KernelMain task"));
         task::set_current_task(*kernel_main);
         info!("Kernel main task set as current");
 

@@ -10,6 +10,33 @@ use spin::Mutex;
 
 use crate::paging::KERNEL_VIRTUAL_BASE;
 
+/// タスク操作のエラー型
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskError {
+    /// 無効な優先度（アイドルタスク以下）
+    InvalidPriority,
+    /// スタック割り当て失敗
+    StackAllocationFailed,
+    /// 無効なスタックアドレス
+    InvalidStackAddress,
+    /// コンテキスト初期化失敗
+    ContextInitFailed,
+    /// タスクキューが満杯
+    QueueFull,
+}
+
+impl core::fmt::Display for TaskError {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        match self {
+            TaskError::InvalidPriority => write!(f, "Invalid task priority (must be >= {})", priority::MIN),
+            TaskError::StackAllocationFailed => write!(f, "Failed to allocate task stack"),
+            TaskError::InvalidStackAddress => write!(f, "Invalid stack address"),
+            TaskError::ContextInitFailed => write!(f, "Failed to initialize task context"),
+            TaskError::QueueFull => write!(f, "Task queue is full"),
+        }
+    }
+}
+
 /// タスクID
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TaskId(u64);
@@ -139,15 +166,38 @@ impl Context {
     /// # Arguments
     /// * `entry_point` - タスクのエントリポイント
     /// * `stack_top` - スタックの最上位アドレス
-    pub fn new(entry_point: u64, stack_top: u64) -> Self {
+    ///
+    /// # Errors
+    /// * `TaskError::InvalidStackAddress` - スタックアドレスが無効（null、アラインメント不正、範囲不正）
+    /// * `TaskError::ContextInitFailed` - コンテキスト初期化に失敗
+    pub fn new(entry_point: u64, stack_top: u64) -> Result<Self, TaskError> {
         const FXSAVE_SIZE: u64 = 512;
         const FXSAVE_ALIGN: u64 = 16;
+        const MIN_REQUIRED_STACK: u64 = 1024; // 最小スタックサイズ
+
+        // バリデーション: スタックトップがnullでないか
+        if stack_top == 0 {
+            return Err(TaskError::InvalidStackAddress);
+        }
+
+        // バリデーション: エントリポイントがnullでないか
+        if entry_point == 0 {
+            return Err(TaskError::ContextInitFailed);
+        }
+
+        // バリデーション: スタックが最低限の容量を持っているか
+        if stack_top < MIN_REQUIRED_STACK {
+            return Err(TaskError::InvalidStackAddress);
+        }
 
         // スタックポインタの初期位置
         let mut rsp = stack_top;
 
         // 1. 戻りアドレス（entry_point）- switch_context()のret用
         rsp -= 8;
+        if rsp == 0 {
+            return Err(TaskError::InvalidStackAddress);
+        }
         unsafe {
             *(rsp as *mut u64) = entry_point;
         }
@@ -194,12 +244,17 @@ impl Context {
         rsp -= FXSAVE_SIZE;
         rsp = (rsp / FXSAVE_ALIGN) * FXSAVE_ALIGN; // 16バイトアライメント
 
+        // バリデーション: 最終的なrspが有効か
+        if rsp == 0 || rsp % FXSAVE_ALIGN != 0 {
+            return Err(TaskError::InvalidStackAddress);
+        }
+
         // fxsave領域をゼロクリア（初期状態）
         unsafe {
             core::ptr::write_bytes(rsp as *mut u8, 0, FXSAVE_SIZE as usize);
         }
 
-        Self { rsp }
+        Ok(Self { rsp })
     }
 
     /// 空のコンテキストを作成
@@ -266,27 +321,26 @@ impl Task {
     /// * `priority` - タスク優先度（priority::MIN以上、priority::MAX以下）
     /// * `entry_point` - エントリポイント関数のアドレス
     ///
-    /// # Panics
-    /// 優先度がpriority::MINより小さい場合（アイドルタスク以下の優先度は許可されない）
-    pub fn new(name: &'static str, priority: u8, entry_point: extern "C" fn() -> !) -> Self {
+    /// # Errors
+    /// * `TaskError::InvalidPriority` - 優先度がpriority::MINより小さい場合
+    /// * `TaskError::StackAllocationFailed` - スタック割り当てに失敗した場合
+    /// * `TaskError::ContextInitFailed` - コンテキスト初期化に失敗した場合
+    pub fn new(name: &'static str, priority: u8, entry_point: extern "C" fn() -> !) -> Result<Self, TaskError> {
         // 優先度の検証：アイドルタスク以下の優先度は許可しない
         if priority < priority::MIN {
-            panic!(
-                "Task priority must be >= {} (IDLE priority is reserved)",
-                priority::MIN
-            );
+            return Err(TaskError::InvalidPriority);
         }
 
         // スタックをヒープに割り当て
         let stack = Box::new(TaskStack::new());
         let stack_top = stack.top();
 
-        let context = Context::new(entry_point as u64, stack_top);
+        let context = Context::new(entry_point as u64, stack_top)?;
 
         // 優先度から重みを計算
         let weight = priority_to_weight(priority);
 
-        Self {
+        Ok(Self {
             id: TaskId::new(),
             name,
             priority,
@@ -295,7 +349,7 @@ impl Task {
             context,
             state: TaskState::Ready,
             stack,
-        }
+        })
     }
 
     /// アイドルタスク専用の作成関数（優先度チェックをスキップ）
@@ -303,17 +357,21 @@ impl Task {
     /// # Arguments
     /// * `name` - タスク名
     /// * `entry_point` - エントリポイント関数のアドレス
-    pub fn new_idle(name: &'static str, entry_point: extern "C" fn() -> !) -> Self {
+    ///
+    /// # Errors
+    /// * `TaskError::StackAllocationFailed` - スタック割り当てに失敗した場合
+    /// * `TaskError::ContextInitFailed` - コンテキスト初期化に失敗した場合
+    pub fn new_idle(name: &'static str, entry_point: extern "C" fn() -> !) -> Result<Self, TaskError> {
         // スタックをヒープに割り当て
         let stack = Box::new(TaskStack::new());
         let stack_top = stack.top();
 
-        let context = Context::new(entry_point as u64, stack_top);
+        let context = Context::new(entry_point as u64, stack_top)?;
 
         // アイドルタスクの重みを計算
         let weight = priority_to_weight(priority::IDLE);
 
-        Self {
+        Ok(Self {
             id: TaskId::new(),
             name,
             priority: priority::IDLE,
@@ -322,7 +380,7 @@ impl Task {
             context,
             state: TaskState::Ready,
             stack,
-        }
+        })
     }
 
     /// タスクIDを取得
@@ -412,11 +470,14 @@ pub fn init() {
     je4os_common::info!("Task system initialized");
 }
 
-/// 新しいタスクをタスクキューに追加
+/// 新しいタスクをタスクキューに追加（エラーハンドリング版）
 ///
 /// # Arguments
 /// * `task` - 追加するタスク
-pub fn add_task(task: Task) {
+///
+/// # Errors
+/// * `TaskError::QueueFull` - タスクキューが満杯の場合（現在は常に成功）
+pub fn try_add_task(task: Task) -> Result<(), TaskError> {
     let mut tree = TASK_QUEUE.lock();
 
     let task_id = task.id().as_u64();
@@ -429,6 +490,18 @@ pub fn add_task(task: Task) {
     tree.insert((vruntime, task_id), boxed_task);
 
     je4os_common::info!("Task added to queue: ID={}, name={}", task_id, name);
+    Ok(())
+}
+
+/// 新しいタスクをタスクキューに追加（後方互換性のため残す）
+///
+/// # Arguments
+/// * `task` - 追加するタスク
+///
+/// # Panics
+/// タスク追加に失敗した場合（現在は発生しない）
+pub fn add_task(task: Task) {
+    try_add_task(task).expect("Failed to add task to queue");
 }
 
 /// 現在のタスクが自発的にCPUを手放す

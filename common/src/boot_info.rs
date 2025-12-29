@@ -19,7 +19,7 @@ pub struct MemoryRegion {
     pub region_type: u32,
 }
 
-pub const MAX_MEMORY_REGIONS: usize = 128;
+pub const MAX_MEMORY_REGIONS: usize = 256;
 
 #[repr(C)]
 #[derive(Copy, Clone)]

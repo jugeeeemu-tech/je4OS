@@ -3,7 +3,7 @@
 //! ACPI テーブルを読み取り、システム設定情報を取得します。
 //! UEFI ブートローダーから RSDP アドレスを受け取り、XSDT/RSDT を解析します。
 
-use crate::paging::KERNEL_VIRTUAL_BASE;
+use crate::paging::{KERNEL_VIRTUAL_BASE, phys_to_virt};
 use je4os_common::boot_info::BootInfo;
 use je4os_common::info;
 
@@ -179,7 +179,11 @@ pub fn init(boot_info: &BootInfo) {
     }
 
     // RSDP の物理アドレスを高位仮想アドレスに変換
-    let rsdp_virt_addr = KERNEL_VIRTUAL_BASE + boot_info.rsdp_address;
+    let rsdp_virt_addr = phys_to_virt(boot_info.rsdp_address)
+        .unwrap_or_else(|_| {
+            info!("Failed to convert RSDP address, falling back to direct addition");
+            KERNEL_VIRTUAL_BASE + boot_info.rsdp_address
+        });
     let rsdp = unsafe { &*(rsdp_virt_addr as *const Rsdp) };
 
     if !rsdp.is_valid_signature() {

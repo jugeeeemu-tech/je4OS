@@ -9,6 +9,30 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use crate::pit;
 use crate::paging::KERNEL_VIRTUAL_BASE;
 
+/// APIC操作のエラー型
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApicError {
+    /// タイマーがキャリブレーションされていない
+    NotCalibrated,
+    /// キャリブレーションに失敗
+    CalibrationFailed,
+    /// 初期化に失敗
+    InitFailed,
+    /// 無効な周波数（0など）
+    InvalidFrequency,
+}
+
+impl core::fmt::Display for ApicError {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        match self {
+            ApicError::NotCalibrated => write!(f, "APIC Timer not calibrated"),
+            ApicError::CalibrationFailed => write!(f, "APIC Timer calibration failed"),
+            ApicError::InitFailed => write!(f, "APIC initialization failed"),
+            ApicError::InvalidFrequency => write!(f, "Invalid APIC timer frequency"),
+        }
+    }
+}
+
 /// Local APICのベースアドレス（高位仮想アドレス）
 /// 物理アドレス 0xFEE00000 を高位仮想アドレス経由でアクセス
 const APIC_BASE: u64 = KERNEL_VIRTUAL_BASE + 0xFEE00000;
@@ -107,7 +131,10 @@ static APIC_TIMER_FREQUENCY: AtomicU32 = AtomicU32::new(0);
 ///
 /// PITを使ってAPIC Timerの実際の周波数を測定します。
 /// この関数は割り込みが無効な状態で呼び出す必要があります。
-pub fn calibrate_timer() {
+///
+/// # Errors
+/// * `ApicError::CalibrationFailed` - キャリブレーションに失敗した場合（周波数が0など）
+pub fn calibrate_timer() -> Result<(), ApicError> {
     unsafe {
         // Timer Divide Configuration Register を設定
         // 0x3 = Divide by 16
@@ -139,11 +166,18 @@ pub fn calibrate_timer() {
         // バス周波数を保存（分周比16を考慮した実効周波数）
         APIC_TIMER_FREQUENCY.store(ticks_per_second, Ordering::SeqCst);
 
+        // 周波数が0の場合はエラー
+        if ticks_per_second == 0 {
+            return Err(ApicError::CalibrationFailed);
+        }
+
         crate::info!(
             "APIC Timer calibrated: {} Hz ({} ticks in 10ms)",
             ticks_per_second,
             ticks_in_10ms
         );
+
+        Ok(())
     }
 }
 
@@ -151,12 +185,20 @@ pub fn calibrate_timer() {
 ///
 /// # Arguments
 /// * `frequency_hz` - タイマー割り込みの周波数 (Hz)
-pub fn init_timer(frequency_hz: u32) {
+///
+/// # Errors
+/// * `ApicError::NotCalibrated` - タイマーがキャリブレーションされていない場合
+/// * `ApicError::InvalidFrequency` - 周波数が0の場合
+pub fn init_timer(frequency_hz: u32) -> Result<(), ApicError> {
+    if frequency_hz == 0 {
+        return Err(ApicError::InvalidFrequency);
+    }
+
     unsafe {
         // キャリブレーション結果を取得
         let apic_freq = APIC_TIMER_FREQUENCY.load(Ordering::SeqCst);
         if apic_freq == 0 {
-            panic!("APIC Timer not calibrated! Call calibrate_timer() first.");
+            return Err(ApicError::NotCalibrated);
         }
 
         // Timer Divide Configuration Register を設定
@@ -182,6 +224,8 @@ pub fn init_timer(frequency_hz: u32) {
             frequency_hz,
             initial_count
         );
+
+        Ok(())
     }
 }
 

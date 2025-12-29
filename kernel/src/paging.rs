@@ -9,11 +9,77 @@ use core::ptr::addr_of_mut;
 /// x86_64のカノニカルアドレス空間の上位半分の開始位置
 pub const KERNEL_VIRTUAL_BASE: u64 = 0xFFFF_8000_0000_0000;
 
+/// ページング操作のエラー型
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PagingError {
+    /// 無効なアドレス（null、範囲外など）
+    InvalidAddress,
+    /// アドレス変換に失敗
+    AddressConversionFailed,
+    /// Guard Page設定に失敗
+    GuardPageSetupFailed,
+    /// ページテーブル初期化に失敗
+    PageTableInitFailed,
+    /// ACPIアドレスが無効
+    AcpiAddressInvalid,
+    /// チェックサム検証失敗
+    ChecksumFailed,
+}
+
+impl core::fmt::Display for PagingError {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        match self {
+            PagingError::InvalidAddress => write!(f, "Invalid address"),
+            PagingError::AddressConversionFailed => write!(f, "Address conversion failed"),
+            PagingError::GuardPageSetupFailed => write!(f, "Guard page setup failed"),
+            PagingError::PageTableInitFailed => write!(f, "Page table initialization failed"),
+            PagingError::AcpiAddressInvalid => write!(f, "ACPI address is invalid"),
+            PagingError::ChecksumFailed => write!(f, "Checksum verification failed"),
+        }
+    }
+}
+
 /// ページテーブルエントリ数（512エントリ）
 const PAGE_TABLE_ENTRY_COUNT: usize = 512;
 
 /// ページサイズ（4KB）
 pub const PAGE_SIZE: usize = 4096;
+
+/// 物理アドレスを仮想アドレスに変換
+///
+/// # Arguments
+/// * `phys_addr` - 物理アドレス
+///
+/// # Returns
+/// 変換された仮想アドレス、またはエラー
+///
+/// # Errors
+/// * `PagingError::InvalidAddress` - 物理アドレスが0（null）の場合
+pub fn phys_to_virt(phys_addr: u64) -> Result<u64, PagingError> {
+    if phys_addr == 0 {
+        return Err(PagingError::InvalidAddress);
+    }
+    Ok(phys_addr + KERNEL_VIRTUAL_BASE)
+}
+
+/// 仮想アドレスを物理アドレスに変換
+///
+/// # Arguments
+/// * `virt_addr` - 仮想アドレス（KERNEL_VIRTUAL_BASE以上であること）
+///
+/// # Returns
+/// 変換された物理アドレス、またはエラー
+///
+/// # Errors
+/// * `PagingError::InvalidAddress` - 仮想アドレスがKERNEL_VIRTUAL_BASE未満の場合
+/// * `PagingError::AddressConversionFailed` - アンダーフローが発生した場合
+pub fn virt_to_phys(virt_addr: u64) -> Result<u64, PagingError> {
+    if virt_addr < KERNEL_VIRTUAL_BASE {
+        return Err(PagingError::InvalidAddress);
+    }
+    virt_addr.checked_sub(KERNEL_VIRTUAL_BASE)
+        .ok_or(PagingError::AddressConversionFailed)
+}
 
 /// ページテーブルエントリのフラグ
 #[repr(u64)]
@@ -101,9 +167,13 @@ impl PageTable {
 
     /// テーブルの物理アドレスを取得
     /// カーネルは高位アドレスで動作しているため、KERNEL_VIRTUAL_BASEを引いて物理アドレスに変換
-    pub fn physical_address(&self) -> u64 {
+    ///
+    /// # Errors
+    /// * `PagingError::InvalidAddress` - 仮想アドレスがKERNEL_VIRTUAL_BASE未満の場合
+    /// * `PagingError::AddressConversionFailed` - アドレス変換に失敗した場合
+    pub fn physical_address(&self) -> Result<u64, PagingError> {
         let virt_addr = self as *const _ as u64;
-        virt_addr - KERNEL_VIRTUAL_BASE
+        virt_to_phys(virt_addr)
     }
 
     /// 全エントリをクリア
@@ -200,7 +270,11 @@ static mut KERNEL_PT_HIGH: [PageTable; 2048] = [PageTable::new(); 2048];
 /// 物理メモリの直接マッピング（Direct Mapping）を実装
 /// - 低位アドレス（0-4GB）: identity mapping（互換性のため残す）
 /// - 高位アドレス（0xFFFF_8000_0000_0000+）: カーネル用の直接マッピング
-pub fn init() {
+///
+/// # Errors
+/// * `PagingError::AddressConversionFailed` - アドレス変換に失敗した場合
+/// * `PagingError::GuardPageSetupFailed` - Guard Page設定に失敗した場合
+pub fn init() -> Result<(), PagingError> {
     unsafe {
         // 生ポインタを取得
         let pml4 = addr_of_mut!(KERNEL_PML4);
@@ -230,21 +304,21 @@ pub fn init() {
         // === 低位アドレスのマッピング（Identity Mapping）===
         // 互換性のため残す（boot_info、APIC、フレームバッファなど）
         // PML4[0] -> PDP_LOW
-        (*pml4).entry(0).set((*pdp_low).physical_address(), flags);
+        (*pml4).entry(0).set((*pdp_low).physical_address()?, flags);
 
         // PDP_LOW[0-3] -> PD_LOW[0-3]（4GB分）
         for i in 0..4 {
-            (*pdp_low).entry(i).set((*pd_low)[i].physical_address(), flags);
+            (*pdp_low).entry(i).set((*pd_low)[i].physical_address()?, flags);
         }
 
         // === 高位アドレスのマッピング（Direct Mapping）===
         // 0xFFFF_8000_0000_0000は、PML4インデックス256に対応
         // PML4[256] -> PDP_HIGH
-        (*pml4).entry(256).set((*pdp_high).physical_address(), flags);
+        (*pml4).entry(256).set((*pdp_high).physical_address()?, flags);
 
         // PDP_HIGH[0-3] -> PD_HIGH[0-3]（4GB分）
         for i in 0..4 {
-            (*pdp_high).entry(i).set((*pd_high)[i].physical_address(), flags);
+            (*pdp_high).entry(i).set((*pd_high)[i].physical_address()?, flags);
         }
 
         // === 4GB全体を4KBページでマッピング ===
@@ -255,8 +329,8 @@ pub fn init() {
         for pd_idx in 0..4 {
             for entry_idx in 0..PAGE_TABLE_ENTRY_COUNT {
                 let pt_idx = pd_idx * PAGE_TABLE_ENTRY_COUNT + entry_idx;
-                (*pd_low)[pd_idx].entry(entry_idx).set((*pt_low)[pt_idx].physical_address(), flags);
-                (*pd_high)[pd_idx].entry(entry_idx).set((*pt_high)[pt_idx].physical_address(), flags);
+                (*pd_low)[pd_idx].entry(entry_idx).set((*pt_low)[pt_idx].physical_address()?, flags);
+                (*pd_high)[pd_idx].entry(entry_idx).set((*pt_high)[pt_idx].physical_address()?, flags);
             }
         }
 
@@ -273,13 +347,16 @@ pub fn init() {
         // === Guard Page の設定 ===
         // スタック領域の直前のページをGuard Page（Present=0）に設定
         let stack_virt_addr = addr_of_mut!(KERNEL_STACK) as u64;
-        let guard_page_virt_addr = stack_virt_addr - PAGE_SIZE as u64;
-        let guard_page_phys_addr = guard_page_virt_addr - KERNEL_VIRTUAL_BASE;
+        let guard_page_virt_addr = stack_virt_addr.checked_sub(PAGE_SIZE as u64)
+            .ok_or(PagingError::GuardPageSetupFailed)?;
+
+        // 仮想アドレスを物理アドレスに変換（virt_to_phys()を使用）
+        let guard_page_phys_addr = virt_to_phys(guard_page_virt_addr)?;
 
         // Guard PageのPTエントリを特定
         // higher-half kernelの場合、カーネルベースからのオフセットを使ってインデックスを計算
         // 仮想アドレス全体から計算すると高位ビットが影響するため、物理オフセットから計算
-        let physical_offset = guard_page_virt_addr - KERNEL_VIRTUAL_BASE;
+        let physical_offset = virt_to_phys(guard_page_virt_addr)?;
 
         // 4GB全体でのページ番号を計算
         let page_num = (physical_offset >> 12) as usize;
@@ -287,6 +364,14 @@ pub fn init() {
         // PT配列内のインデックスとPT内のエントリ番号を計算
         let pt_array_idx = page_num / PAGE_TABLE_ENTRY_COUNT;
         let page_idx_in_pt = page_num % PAGE_TABLE_ENTRY_COUNT;
+
+        // インデックスの範囲検証
+        if pt_array_idx >= 2048 {
+            return Err(PagingError::GuardPageSetupFailed);
+        }
+        if page_idx_in_pt >= PAGE_TABLE_ENTRY_COUNT {
+            return Err(PagingError::GuardPageSetupFailed);
+        }
 
         // Guard PageのPTエントリをPresent=0に設定（アクセス時にPage Faultが発生）
         (*pt_high)[pt_array_idx].entry(page_idx_in_pt).set(guard_page_phys_addr, 0);
@@ -303,8 +388,10 @@ pub fn init() {
         info!("  Entry is Present: {}", (*pt_high)[pt_array_idx].entry(page_idx_in_pt).get_raw() & 1 != 0);
 
         // CR3レジスタにPML4のアドレスを設定
-        let pml4_addr = (*pml4).physical_address();
+        let pml4_addr = (*pml4).physical_address()?;
         write_cr3(pml4_addr);
+
+        Ok(())
     }
 }
 
