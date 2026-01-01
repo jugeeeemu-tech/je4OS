@@ -264,8 +264,11 @@ extern "C" fn kernel_main_inner(boot_info_phys_addr: u64) -> ! {
     apic::calibrate_timer().expect("Failed to calibrate APIC Timer");
 
     // グローバルフレームバッファを初期化（表示はヒープ初期化後）
+    // 物理アドレスを高位仮想アドレスに変換
+    let fb_virt_base = paging::phys_to_virt(boot_info.framebuffer.base)
+        .expect("Failed to convert framebuffer address");
     init_global_framebuffer(
-        boot_info.framebuffer.base,
+        fb_virt_base,
         boot_info.framebuffer.width,
         boot_info.framebuffer.height,
         0xFFFFFFFF,
@@ -275,7 +278,7 @@ extern "C" fn kernel_main_inner(boot_info_phys_addr: u64) -> ! {
     info!("Memory map array len: {}", boot_info.memory_map.len());
 
     // 利用可能なメモリを探してアロケータを初期化
-    let mut largest_start = 0;
+    let mut largest_start_phys: u64 = 0;
     let mut largest_size = 0;
 
     // 配列の範囲内に制限
@@ -287,7 +290,7 @@ extern "C" fn kernel_main_inner(boot_info_phys_addr: u64) -> ! {
         // region_type == 7 は EFI_CONVENTIONAL_MEMORY
         if region.region_type == uefi::EFI_CONVENTIONAL_MEMORY && region.size > largest_size as u64
         {
-            largest_start = region.start as usize;
+            largest_start_phys = region.start;
             largest_size = region.size as usize;
         }
     }
@@ -302,8 +305,16 @@ extern "C" fn kernel_main_inner(boot_info_phys_addr: u64) -> ! {
         #[cfg(not(feature = "visualize-allocator"))]
         let heap_size = largest_size; // 本番環境では全て使用
 
+        // 物理アドレスを高位仮想アドレスに変換
+        let largest_start_virt =
+            paging::phys_to_virt(largest_start_phys).expect("Failed to convert heap address");
+        info!(
+            "Heap: phys=0x{:X} virt=0x{:X}",
+            largest_start_phys, largest_start_virt
+        );
+
         unsafe {
-            allocator::init_heap(largest_start, heap_size);
+            allocator::init_heap(largest_start_virt as usize, heap_size);
         }
 
         // 可視化テストを実行
@@ -414,9 +425,10 @@ extern "C" fn kernel_main_inner(boot_info_phys_addr: u64) -> ! {
             boot_info.memory_map_count
         ));
         fb_writeln(&alloc::format!(
-            "Largest usable memory: 0x{:X} - 0x{:X} ({} MB)",
-            largest_start,
-            largest_start + largest_size,
+            "Largest usable memory: phys=0x{:X} virt=0x{:X} - 0x{:X} ({} MB)",
+            largest_start_phys,
+            largest_start_virt,
+            largest_start_virt + largest_size as u64,
             largest_size / 1024 / 1024
         ));
         fb_writeln(&alloc::format!("Heap initialized: {} KB", heap_size / 1024));

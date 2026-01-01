@@ -314,18 +314,6 @@ pub fn init() -> Result<(), PagingError> {
         // 基本フラグ: Present + Writable
         let flags = PageTableFlags::Present as u64 | PageTableFlags::Writable as u64;
 
-        // === 低位アドレスのマッピング（Identity Mapping）===
-        // 互換性のため残す（boot_info、APIC、フレームバッファなど）
-        // PML4[0] -> PDP_LOW
-        (*pml4).entry(0).set((*pdp_low).physical_address()?, flags);
-
-        // PDP_LOW[0-7] -> PD_LOW[0-7]（8GB分）
-        for i in 0..8 {
-            (*pdp_low)
-                .entry(i)
-                .set((*pd_low)[i].physical_address()?, flags);
-        }
-
         // === 高位アドレスのマッピング（Direct Mapping）===
         // 0xFFFF_8000_0000_0000は、PML4インデックス256に対応
         // PML4[256] -> PDP_HIGH
@@ -344,26 +332,22 @@ pub fn init() -> Result<(), PagingError> {
         // 各PD（8個）が512個のPTを参照し、各PTが512個の4KBページをマップ
         // 合計: 8 × 512 × 512 × 4KB = 8GB
 
-        // 各PDエントリにPTをリンク
+        // 各PDエントリにPTをリンク（高位アドレスのみ）
         for pd_idx in 0..8 {
             for entry_idx in 0..PAGE_TABLE_ENTRY_COUNT {
                 let pt_idx = pd_idx * PAGE_TABLE_ENTRY_COUNT + entry_idx;
-                (*pd_low)[pd_idx]
-                    .entry(entry_idx)
-                    .set((*pt_low)[pt_idx].physical_address()?, flags);
                 (*pd_high)[pd_idx]
                     .entry(entry_idx)
                     .set((*pt_high)[pt_idx].physical_address()?, flags);
             }
         }
 
-        // 各PTのエントリに4KBページをマップ
+        // 各PTのエントリに4KBページをマップ（高位アドレスのみ）
         for pt_idx in 0..4096 {
             for page_idx in 0..PAGE_TABLE_ENTRY_COUNT {
                 // 物理アドレス = (PT番号 × 2MB) + (ページ番号 × 4KB)
                 let physical_addr =
                     ((pt_idx * PAGE_TABLE_ENTRY_COUNT + page_idx) * PAGE_SIZE) as u64;
-                (*pt_low)[pt_idx].entry(page_idx).set(physical_addr, flags);
                 (*pt_high)[pt_idx].entry(page_idx).set(physical_addr, flags);
             }
         }
