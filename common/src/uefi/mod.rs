@@ -84,6 +84,33 @@ pub struct EfiGraphicsOutputProtocol {
 
 const _: () = assert!(core::mem::offset_of!(EfiGraphicsOutputProtocol, mode) == 24);
 
+// Simple Text Output Protocol Mode
+#[repr(C)]
+pub struct SimpleTextOutputMode {
+    pub max_mode: i32,
+    pub mode: i32,
+    pub attribute: i32,
+    pub cursor_column: i32,
+    pub cursor_row: i32,
+    pub cursor_visible: bool,
+}
+
+// Simple Text Output Protocol
+#[repr(C)]
+pub struct EfiSimpleTextOutputProtocol {
+    pub reset: extern "efiapi" fn(*mut EfiSimpleTextOutputProtocol, bool) -> EfiStatus,
+    pub output_string:
+        extern "efiapi" fn(*mut EfiSimpleTextOutputProtocol, *const u16) -> EfiStatus,
+    pub test_string: usize,
+    pub query_mode: usize,
+    pub set_mode: usize,
+    pub set_attribute: usize,
+    pub clear_screen: extern "efiapi" fn(*mut EfiSimpleTextOutputProtocol) -> EfiStatus,
+    pub set_cursor_position: usize,
+    pub enable_cursor: usize,
+    pub mode: *mut SimpleTextOutputMode,
+}
+
 // メモリタイプ
 pub const EFI_RESERVED_MEMORY_TYPE: u32 = 0;
 pub const EFI_LOADER_CODE: u32 = 1;
@@ -157,9 +184,9 @@ pub struct EfiSystemTable {
     pub console_in_handle: EfiHandle,
     pub con_in: usize,
     pub console_out_handle: EfiHandle,
-    pub con_out: usize,
+    pub con_out: *mut EfiSimpleTextOutputProtocol,
     pub console_err_handle: EfiHandle,
-    pub std_err: usize,
+    pub std_err: *mut EfiSimpleTextOutputProtocol,
     pub runtime_services: usize,
     pub boot_services: *mut EfiBootServices,
     pub number_of_table_entries: usize,

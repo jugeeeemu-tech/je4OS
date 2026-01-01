@@ -5,20 +5,94 @@ use core::fmt::Write;
 use core::panic::PanicInfo;
 use vitros_common::boot_info::{BootInfo, FramebufferInfo, MemoryRegion};
 use vitros_common::elf::{Elf64Header, Elf64ProgramHeader, PT_LOAD};
-use vitros_common::graphics::FramebufferWriter;
-use vitros_common::serial;
 use vitros_common::uefi::*;
-use vitros_common::{error, info, println};
 
 // BOOT_INFOをカーネル直前の固定アドレスに配置
 // 0x90000 (576KB) - カーネル(0x100000=1MB)の手前で安全
 // この領域はConventional Memoryで、ExitBootServices後も有効
 const BOOT_INFO_ADDR: usize = 0x90000;
 
+// グローバルなConOut（初期化後に設定）
+static mut CON_OUT: Option<*mut EfiSimpleTextOutputProtocol> = None;
+
+// ConOutに文字列を出力するヘルパー関数
+fn print_con(s: &str) {
+    unsafe {
+        if let Some(con_out) = CON_OUT {
+            let mut buffer = [0u16; 256];
+            let mut len = 0;
+            for c in s.chars() {
+                if len >= buffer.len() - 1 {
+                    break;
+                }
+                buffer[len] = c as u16;
+                len += 1;
+            }
+            buffer[len] = 0; // null terminator
+            ((*con_out).output_string)(con_out, buffer.as_ptr());
+        }
+    }
+}
+
+// 改行付き出力
+fn println_con(s: &str) {
+    print_con(s);
+    print_con("\r\n");
+}
+
+// 固定サイズバッファを使ったフォーマット出力
+struct BufWriter {
+    buf: [u8; 512],
+    pos: usize,
+}
+
+impl BufWriter {
+    fn new() -> Self {
+        Self {
+            buf: [0; 512],
+            pos: 0,
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.buf[..self.pos]).unwrap_or("")
+    }
+}
+
+impl Write for BufWriter {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let bytes = s.as_bytes();
+        let remaining = self.buf.len() - self.pos;
+        let to_write = bytes.len().min(remaining);
+        self.buf[self.pos..self.pos + to_write].copy_from_slice(&bytes[..to_write]);
+        self.pos += to_write;
+        Ok(())
+    }
+}
+
+// マクロライクなヘルパー
+macro_rules! print_uefi {
+    ($($arg:tt)*) => {{
+        use core::fmt::Write;
+        let mut buf = BufWriter::new();
+        let _ = write!(buf, $($arg)*);
+        print_con(buf.as_str());
+    }};
+}
+
+macro_rules! println_uefi {
+    ($($arg:tt)*) => {{
+        use core::fmt::Write;
+        let mut buf = BufWriter::new();
+        let _ = write!(buf, $($arg)*);
+        println_con(buf.as_str());
+    }};
+}
+
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    println!("\n!!! BOOTLOADER PANIC !!!");
-    println!("{}", info);
+    println_con("\n!!! BOOTLOADER PANIC !!!");
+    println_uefi!("{}", info);
     loop {
         unsafe { core::arch::asm!("hlt") }
     }
@@ -144,11 +218,14 @@ extern "efiapi" fn efi_main(
     image_handle: EfiHandle,
     system_table: *mut EfiSystemTable,
 ) -> EfiStatus {
-    // シリアルポートを初期化
-    serial::init();
-    println!("=== VitrOS Bootloader ===");
-    info!("Serial output initialized");
-    info!("Locating Graphics Output Protocol...");
+    // ConOut (UEFI Simple Text Output Protocol) を初期化
+    unsafe {
+        CON_OUT = Some((*system_table).con_out);
+    }
+
+    println_con("=== VitrOS Bootloader ===");
+    println_uefi!("[INFO] UEFI ConOut initialized");
+    println_uefi!("[INFO] Locating Graphics Output Protocol...");
 
     // SAFETY: system_table は UEFI から渡される有効なポインタ
     let boot_services = unsafe { (*system_table).boot_services };
@@ -166,13 +243,13 @@ extern "efiapi" fn efi_main(
     };
 
     if status != EFI_SUCCESS {
-        error!("Failed to locate GOP!");
+        println_uefi!("[ERROR] Failed to locate GOP!");
         loop {
             unsafe { core::arch::asm!("hlt") }
         }
     }
 
-    info!("GOP found successfully");
+    println_uefi!("[INFO] GOP found successfully");
 
     // SAFETY: GOP から有効なフレームバッファ情報を取得
     let (fb_base, fb_size, width, height) = unsafe {
@@ -186,19 +263,14 @@ extern "efiapi" fn efi_main(
         )
     };
 
-    // SAFETY: フレームバッファへの直接書き込み（画面クリア）
+    // 画面クリア（ConOut使用）
     unsafe {
-        let fb_ptr = fb_base as *mut u32;
-        let pixel_count = fb_size / 4;
-        for i in 0..pixel_count {
-            *fb_ptr.add(i) = 0x00000000;
+        if let Some(con_out) = CON_OUT {
+            ((*con_out).clear_screen)(con_out);
         }
     }
 
-    // FramebufferWriter を作成
-    let mut writer = FramebufferWriter::new(fb_base, width, height, 0xFFFFFFFF);
-    writer.set_position(10, 10);
-    let _ = writeln!(writer, "VitrOS - Memory Map");
+    println_uefi!("\nVitrOS - Memory Map\n");
 
     // メモリマップを取得
     let mut map_size: usize = 0;
@@ -257,18 +329,18 @@ extern "efiapi" fn efi_main(
             // ACPI 2.0 を優先的に検索
             if entry.vendor_guid == EFI_ACPI_20_TABLE_GUID {
                 rsdp_addr = entry.vendor_table;
-                info!("Found ACPI 2.0 RSDP at 0x{:016X}", rsdp_addr);
+                println_uefi!("[INFO] Found ACPI 2.0 RSDP at 0x{:016X}", rsdp_addr);
                 break;
             }
             // ACPI 1.0 をフォールバック
             else if entry.vendor_guid == EFI_ACPI_TABLE_GUID {
                 rsdp_addr = entry.vendor_table;
-                info!("Found ACPI 1.0 RSDP at 0x{:016X}", rsdp_addr);
+                println_uefi!("[INFO] Found ACPI 1.0 RSDP at 0x{:016X}", rsdp_addr);
             }
         }
 
         if rsdp_addr == 0 {
-            info!("RSDP not found in UEFI Configuration Table");
+            println_uefi!("[INFO] RSDP not found in UEFI Configuration Table");
         }
 
         boot_info.rsdp_address = rsdp_addr;
@@ -276,13 +348,12 @@ extern "efiapi" fn efi_main(
 
     if status == EFI_SUCCESS {
         let entry_count = map_size / descriptor_size;
-        info!("Memory map retrieved: {} entries", entry_count);
+        println_uefi!("[INFO] Memory map retrieved: {} entries", entry_count);
 
         // メモリマップを表示
-        writer.set_position(10, 30);
         let max_display = 20;
 
-        println!(
+        println_uefi!(
             "\nMemory Map (first {} entries):",
             max_display.min(entry_count)
         );
@@ -293,20 +364,15 @@ extern "efiapi" fn efi_main(
             let desc = unsafe { &*(buffer.as_ptr().add(offset) as *const EfiMemoryDescriptor) };
 
             let type_str = memory_type_str(desc.r#type);
-            println!(
+            println_uefi!(
                 "  {:<12} 0x{:016X}  Pages: 0x{:X}",
-                type_str, desc.physical_start, desc.number_of_pages
-            );
-
-            let _ = writeln!(
-                writer,
-                "{:<12} 0x{:016X}  Pages: 0x{:X}",
-                type_str, desc.physical_start, desc.number_of_pages
+                type_str,
+                desc.physical_start,
+                desc.number_of_pages
             );
         }
 
-        let _ = writeln!(writer);
-        let _ = writeln!(writer, "Total entries: {}", entry_count);
+        println_uefi!("\nTotal entries: {}", entry_count);
 
         // BootInfo にメモリマップをコピー
         for i in 0..entry_count.min(boot_info.memory_map.len()) {
@@ -320,13 +386,13 @@ extern "efiapi" fn efi_main(
             };
         }
         boot_info.memory_map_count = entry_count.min(boot_info.memory_map.len());
-        info!("BOOT_INFO at 0x{:X}", BOOT_INFO_ADDR);
-        info!(
-            "BOOT_INFO.memory_map_count = {}",
+        println_uefi!("[INFO] BOOT_INFO at 0x{:X}", BOOT_INFO_ADDR);
+        println_uefi!(
+            "[INFO] BOOT_INFO.memory_map_count = {}",
             boot_info.memory_map_count
         );
-        info!(
-            "BOOT_INFO.memory_map[0]: start=0x{:X}, size=0x{:X}, type={}",
+        println_uefi!(
+            "[INFO] BOOT_INFO.memory_map[0]: start=0x{:X}, size=0x{:X}, type={}",
             boot_info.memory_map[0].start,
             boot_info.memory_map[0].size,
             boot_info.memory_map[0].region_type
@@ -334,19 +400,18 @@ extern "efiapi" fn efi_main(
     }
 
     // カーネルをロード (ブートサービス終了前に実行)
-    info!("Loading kernel from ELF...");
+    println_uefi!("[INFO] Loading kernel from ELF...");
     let kernel_entry = load_kernel_elf(image_handle, boot_services);
     if kernel_entry == 0 {
-        error!("Failed to load kernel!");
-        let _ = writeln!(writer, "ERROR: Failed to load kernel!");
+        println_uefi!("[ERROR] Failed to load kernel!");
         loop {
             unsafe { core::arch::asm!("hlt") }
         }
     }
-    info!("Kernel entry point: 0x{:X}", kernel_entry);
+    println_uefi!("[INFO] Kernel entry point: 0x{:X}", kernel_entry);
 
     // カーネルロード後にメモリマップが変更されているので、再取得
-    info!("Updating memory map before ExitBootServices...");
+    println_uefi!("[INFO] Updating memory map before ExitBootServices...");
 
     // まず必要なサイズを取得
     map_size = 0;
@@ -363,8 +428,8 @@ extern "efiapi" fn efi_main(
     map_size += descriptor_size;
 
     if map_size > buffer.len() {
-        error!(
-            "Memory map too large! Required: {}, Available: {}",
+        println_uefi!(
+            "[ERROR] Memory map too large! Required: {}, Available: {}",
             map_size,
             buffer.len()
         );
@@ -383,63 +448,43 @@ extern "efiapi" fn efi_main(
         )
     };
     if status != EFI_SUCCESS {
-        error!("Failed to get updated memory map! Status: 0x{:X}", status);
+        println_uefi!(
+            "[ERROR] Failed to get updated memory map! Status: 0x{:X}",
+            status
+        );
         loop {
             unsafe { core::arch::asm!("hlt") }
         }
     }
-
-    // ブートローダーの最終メッセージ（メモリマップの後に表示）
-    let _ = writeln!(writer);
-    let _ = writeln!(writer, "Exiting boot services...");
 
     // SAFETY: UEFI 関数呼び出し - ブートサービス終了
-    info!("Exiting boot services...");
+    // GetMemoryMap後はBoot Serviceを使用しない（MapKeyが無効になるため）
     let status = unsafe { ((*boot_services).exit_boot_services)(image_handle, map_key) };
 
-    if status == EFI_SUCCESS {
-        info!("Boot services exited successfully!");
-        let _ = writeln!(writer, "Boot Services Exited!");
-        let _ = writeln!(writer);
-        let _ = writeln!(writer, "Jumping to kernel...");
-        let _ = writeln!(writer);
-        let _ = writeln!(writer, "--- Kernel Output ---");
-    } else {
-        error!("Failed to exit boot services! Status: 0x{:X}", status);
-        writer.set_color(0xFF0000);
-        let _ = writeln!(writer, "Exit failed!");
+    if status != EFI_SUCCESS {
+        // ExitBootServicesが失敗した場合は、まだBootServicesが有効なのでConOutが使える
+        println_uefi!(
+            "[ERROR] Failed to exit boot services! Status: 0x{:X}",
+            status
+        );
         loop {
             unsafe { core::arch::asm!("hlt") }
         }
     }
 
-    info!("Bootloader finished, setting up page tables...");
+    // ExitBootServices成功 - ここから先はBoot Servicesは使用不可
 
     // ページテーブルをセットアップ
     let pml4_addr = unsafe { setup_initial_page_tables() };
-    info!("Page tables created at 0x{:X}", pml4_addr);
 
     // CR3にページテーブルをロード
     unsafe { load_page_tables(pml4_addr) };
-    info!("Page tables loaded, both low and high addresses are now mapped");
 
     // カーネルジャンプ直前にBOOT_INFOを再確認
     let boot_info_check = unsafe { &*(BOOT_INFO_ADDR as *const BootInfo) };
-    info!(
-        "Pre-jump check: BOOT_INFO.memory_map_count = {}",
-        boot_info_check.memory_map_count
-    );
-    info!(
-        "Pre-jump check: BOOT_INFO.framebuffer.base = 0x{:X}",
-        boot_info_check.framebuffer.base
-    );
 
     // カーネルの高位仮想アドレスを計算（kernel_entryは物理アドレス）
     let kernel_high_addr = kernel_entry + KERNEL_VMA;
-    info!(
-        "Jumping to kernel at high address: 0x{:X}",
-        kernel_high_addr
-    );
 
     // カーネルにジャンプ (efiapi calling convention to match kernel entry point)
     type KernelEntry = extern "efiapi" fn(&'static BootInfo) -> !;
@@ -459,7 +504,7 @@ fn load_kernel_elf(_image_handle: EfiHandle, boot_services: *mut EfiBootServices
         )
     };
     if status != EFI_SUCCESS {
-        error!("Failed to locate Simple File System Protocol");
+        println_uefi!("[ERROR] Failed to locate Simple File System Protocol");
         return 0;
     }
 
@@ -467,7 +512,7 @@ fn load_kernel_elf(_image_handle: EfiHandle, boot_services: *mut EfiBootServices
     let mut root: *mut EfiFileProtocol = core::ptr::null_mut();
     let status = unsafe { ((*sfs).open_volume)(sfs, &mut root) };
     if status != EFI_SUCCESS {
-        error!("Failed to open root volume");
+        println_uefi!("[ERROR] Failed to open root volume");
         return 0;
     }
 
@@ -484,7 +529,7 @@ fn load_kernel_elf(_image_handle: EfiHandle, boot_services: *mut EfiBootServices
         )
     };
     if status != EFI_SUCCESS {
-        error!("Failed to open kernel.elf");
+        println_uefi!("[ERROR] Failed to open kernel.elf");
         return 0;
     }
 
@@ -505,16 +550,16 @@ fn load_kernel_elf(_image_handle: EfiHandle, boot_services: *mut EfiBootServices
     }
 
     if status != EFI_SUCCESS {
-        error!("Failed to read kernel file");
+        println_uefi!("[ERROR] Failed to read kernel file");
         return 0;
     }
 
-    info!("Kernel loaded: {} bytes", file_size);
+    println_uefi!("[INFO] Kernel loaded: {} bytes", file_size);
 
     // ELFヘッダーを検証
     let elf_header = unsafe { &*(file_buffer.as_ptr() as *const Elf64Header) };
     if !elf_header.is_valid() {
-        error!("Invalid ELF header");
+        println_uefi!("[ERROR] Invalid ELF header");
         return 0;
     }
 
