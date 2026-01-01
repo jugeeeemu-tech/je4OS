@@ -255,13 +255,13 @@ extern "efiapi" fn efi_main(
             let entry = &*config_table_ptr.add(i);
 
             // ACPI 2.0 を優先的に検索
-            if entry.vendor_guid.equals(&EFI_ACPI_20_TABLE_GUID) {
+            if entry.vendor_guid == EFI_ACPI_20_TABLE_GUID {
                 rsdp_addr = entry.vendor_table;
                 info!("Found ACPI 2.0 RSDP at 0x{:016X}", rsdp_addr);
                 break;
             }
             // ACPI 1.0 をフォールバック
-            else if entry.vendor_guid.equals(&EFI_ACPI_TABLE_GUID) {
+            else if entry.vendor_guid == EFI_ACPI_TABLE_GUID {
                 rsdp_addr = entry.vendor_table;
                 info!("Found ACPI 1.0 RSDP at 0x{:016X}", rsdp_addr);
             }

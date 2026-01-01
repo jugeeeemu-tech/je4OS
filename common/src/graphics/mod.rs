@@ -3,7 +3,11 @@ mod font;
 pub use font::FONT_8X8;
 
 // フレームバッファに文字を描画
-pub fn draw_char(fb_base: u64, width: u32, x: usize, y: usize, ch: u8, color: u32) {
+//
+// # Safety
+// fb_base は有効なフレームバッファアドレスである必要があり、
+// 描画範囲が画面内に収まっていることを呼び出し側が保証する必要があります。
+pub unsafe fn draw_char(fb_base: u64, width: u32, x: usize, y: usize, ch: u8, color: u32) {
     let fb_ptr = fb_base as *mut u32;
 
     if ch < 32 || ch > 126 {
@@ -13,12 +17,22 @@ pub fn draw_char(fb_base: u64, width: u32, x: usize, y: usize, ch: u8, color: u3
     let font_index = (ch - 32) as usize;
     let glyph = FONT_8X8[font_index];
 
-    unsafe {
-        for row in 0..8 {
-            for col in 0..8 {
-                if (glyph[row] >> col) & 1 == 1 {
-                    let pixel_offset = (y + row) * width as usize + (x + col);
-                    *fb_ptr.add(pixel_offset) = color;
+    for row in 0..8 {
+        for col in 0..8 {
+            if (glyph[row] >> col) & 1 == 1 {
+                // オーバーフローと境界チェック
+                if let (Some(pixel_x), Some(pixel_y)) = (x.checked_add(col), y.checked_add(row))
+                    && pixel_x < width as usize
+                {
+                    let pixel_offset = pixel_y
+                        .checked_mul(width as usize)
+                        .and_then(|y_offset| y_offset.checked_add(pixel_x));
+
+                    if let Some(offset) = pixel_offset {
+                        unsafe {
+                            *fb_ptr.add(offset) = color;
+                        }
+                    }
                 }
             }
         }
@@ -26,31 +40,66 @@ pub fn draw_char(fb_base: u64, width: u32, x: usize, y: usize, ch: u8, color: u3
 }
 
 // 文字列を描画
-pub fn draw_string(fb_base: u64, width: u32, x: usize, y: usize, s: &str, color: u32) {
+//
+// # Safety
+// fb_base は有効なフレームバッファアドレスである必要があり、
+// 描画範囲が画面内に収まっていることを呼び出し側が保証する必要があります。
+pub unsafe fn draw_string(fb_base: u64, width: u32, x: usize, y: usize, s: &str, color: u32) {
     let mut cur_x = x;
     for ch in s.bytes() {
-        draw_char(fb_base, width, cur_x, y, ch, color);
-        cur_x += 8; // 次の文字へ（8ピクセル幅）
+        unsafe {
+            draw_char(fb_base, width, cur_x, y, ch, color);
+        }
+        // オーバーフローチェック
+        if let Some(next_x) = cur_x.checked_add(8) {
+            cur_x = next_x;
+        } else {
+            break; // オーバーフロー時は描画を停止
+        }
     }
 }
 
 // 矩形を描画（塗りつぶし）
-pub fn draw_rect(fb_base: u64, width: u32, x: usize, y: usize, w: usize, h: usize, color: u32) {
+//
+// # Safety
+// fb_base は有効なフレームバッファアドレスである必要があり、
+// 描画範囲が画面内に収まっていることを呼び出し側が保証する必要があります。
+pub unsafe fn draw_rect(
+    fb_base: u64,
+    width: u32,
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
+    color: u32,
+) {
     let fb = fb_base as *mut u32;
     for dy in 0..h {
         for dx in 0..w {
-            let pixel_x = x + dx;
-            let pixel_y = y + dy;
-            let offset = pixel_y * width as usize + pixel_x;
-            unsafe {
-                *fb.add(offset) = color;
+            // オーバーフローと境界チェック
+            if let (Some(pixel_x), Some(pixel_y)) = (x.checked_add(dx), y.checked_add(dy))
+                && pixel_x < width as usize
+            {
+                let offset = pixel_y
+                    .checked_mul(width as usize)
+                    .and_then(|y_offset| y_offset.checked_add(pixel_x));
+
+                if let Some(off) = offset {
+                    unsafe {
+                        *fb.add(off) = color;
+                    }
+                }
             }
         }
     }
 }
 
 // 矩形の枠線を描画
-pub fn draw_rect_outline(
+//
+// # Safety
+// fb_base は有効なフレームバッファアドレスである必要があり、
+// 描画範囲が画面内に収まっていることを呼び出し側が保証する必要があります。
+pub unsafe fn draw_rect_outline(
     fb_base: u64,
     width: u32,
     x: usize,
@@ -61,19 +110,67 @@ pub fn draw_rect_outline(
 ) {
     let fb = fb_base as *mut u32;
 
+    if w == 0 || h == 0 {
+        return; // サイズが0の場合は何もしない
+    }
+
     // 上下の辺
     for dx in 0..w {
-        unsafe {
-            *fb.add(y * width as usize + x + dx) = color;
-            *fb.add((y + h - 1) * width as usize + x + dx) = color;
+        if let Some(pixel_x) = x.checked_add(dx)
+            && pixel_x < width as usize
+        {
+            // 上辺
+            let top_offset = y
+                .checked_mul(width as usize)
+                .and_then(|y_off| y_off.checked_add(pixel_x));
+            if let Some(off) = top_offset {
+                unsafe {
+                    *fb.add(off) = color;
+                }
+            }
+
+            // 下辺
+            if let Some(bottom_y) = y.checked_add(h - 1) {
+                let bottom_offset = bottom_y
+                    .checked_mul(width as usize)
+                    .and_then(|y_off| y_off.checked_add(pixel_x));
+                if let Some(off) = bottom_offset {
+                    unsafe {
+                        *fb.add(off) = color;
+                    }
+                }
+            }
         }
     }
 
     // 左右の辺
     for dy in 0..h {
-        unsafe {
-            *fb.add((y + dy) * width as usize + x) = color;
-            *fb.add((y + dy) * width as usize + x + w - 1) = color;
+        if let Some(pixel_y) = y.checked_add(dy) {
+            // 左辺
+            if x < width as usize {
+                let left_offset = pixel_y
+                    .checked_mul(width as usize)
+                    .and_then(|y_off| y_off.checked_add(x));
+                if let Some(off) = left_offset {
+                    unsafe {
+                        *fb.add(off) = color;
+                    }
+                }
+            }
+
+            // 右辺
+            if let Some(right_x) = x.checked_add(w - 1)
+                && right_x < width as usize
+            {
+                let right_offset = pixel_y
+                    .checked_mul(width as usize)
+                    .and_then(|y_off| y_off.checked_add(right_x));
+                if let Some(off) = right_offset {
+                    unsafe {
+                        *fb.add(off) = color;
+                    }
+                }
+            }
         }
     }
 }
@@ -128,15 +225,17 @@ impl FramebufferWriter {
     pub fn clear_area(&mut self, width_chars: usize, bg_color: u32) {
         let width_pixels = width_chars * 8;
         let height_pixels = 10; // 1行分の高さ
-        draw_rect(
-            self.fb_base,
-            self.width,
-            self.x,
-            self.y,
-            width_pixels,
-            height_pixels,
-            bg_color,
-        );
+        unsafe {
+            draw_rect(
+                self.fb_base,
+                self.width,
+                self.x,
+                self.y,
+                width_pixels,
+                height_pixels,
+                bg_color,
+            );
+        }
     }
 
     // 改行処理
@@ -157,7 +256,9 @@ impl core::fmt::Write for FramebufferWriter {
                     self.newline();
                 }
 
-                draw_char(self.fb_base, self.width, self.x, self.y, ch, self.color);
+                unsafe {
+                    draw_char(self.fb_base, self.width, self.x, self.y, ch, self.color);
+                }
                 self.x += 8;
             }
         }

@@ -52,18 +52,24 @@ pub fn draw_code_snippet(writer: &mut FramebufferWriter, code_lines: &[&str]) {
     let screen_width = writer.width;
 
     // 左側の領域をクリア
-    draw_rect(fb_base, screen_width, 0, 280, 400, 320, 0x000000);
+    unsafe {
+        draw_rect(fb_base, screen_width, 0, 280, 400, 320, 0x000000);
+    }
 
     let start_x = 10;
     let mut y = 290;
 
     // タイトル
-    draw_string(fb_base, screen_width, start_x, y, "Code:", 0xFFFF00);
+    unsafe {
+        draw_string(fb_base, screen_width, start_x, y, "Code:", 0xFFFF00);
+    }
     y += 15;
 
     // コード行を描画
     for line in code_lines {
-        draw_string(fb_base, screen_width, start_x, y, line, 0x00FFFF);
+        unsafe {
+            draw_string(fb_base, screen_width, start_x, y, line, 0x00FFFF);
+        }
         y += 10;
     }
 }
@@ -77,10 +83,14 @@ pub fn draw_memory_grids_multi(writer: &mut FramebufferWriter, title: &str) {
     let screen_width = writer.width;
 
     // 右側の領域をクリア（x=400以降）
-    draw_rect(fb_base, screen_width, 400, 280, 624, 320, 0x000000);
+    unsafe {
+        draw_rect(fb_base, screen_width, 400, 280, 624, 320, 0x000000);
+    }
 
     // タイトルを描画
-    draw_string(fb_base, screen_width, 410, 290, title, 0xFFFF00);
+    unsafe {
+        draw_string(fb_base, screen_width, 410, 290, title, 0xFFFF00);
+    }
 
     let heap_size = 256 * 1024; // 256KB
 
@@ -110,7 +120,9 @@ pub fn draw_memory_grids_multi(writer: &mut FramebufferWriter, title: &str) {
 
         // サイズクラスラベル
         let label = format!("{}B", size);
-        draw_string(fb_base, screen_width, grid_x, grid_y - 12, &label, 0xFFFFFF);
+        unsafe {
+            draw_string(fb_base, screen_width, grid_x, grid_y - 12, &label, 0xFFFFFF);
+        }
 
         // グリッドを描画（最大400ブロックまで = 20x20）
         let max_display = (grid_cols_per_class * grid_cols_per_class).min(total_blocks);
@@ -128,7 +140,9 @@ pub fn draw_memory_grids_multi(writer: &mut FramebufferWriter, title: &str) {
                 0x00FF00 // 緑: 空き
             };
 
-            draw_rect(fb_base, screen_width, x, y, cell_size, cell_size, color);
+            unsafe {
+                draw_rect(fb_base, screen_width, x, y, cell_size, cell_size, color);
+            }
         }
 
         // 使用率を表示
@@ -138,44 +152,48 @@ pub fn draw_memory_grids_multi(writer: &mut FramebufferWriter, title: &str) {
             0
         };
         let usage = format!("{}%", usage_pct);
-        draw_string(
-            fb_base,
-            screen_width,
-            grid_x + 25,
-            grid_y + grid_pixel_size + 3,
-            &usage,
-            0xAAAAAA,
-        );
+        unsafe {
+            draw_string(
+                fb_base,
+                screen_width,
+                grid_x + 25,
+                grid_y + grid_pixel_size + 3,
+                &usage,
+                0xAAAAAA,
+            );
+        }
     }
 
     // 凡例
     let legend_y = start_y + 2 * (grid_pixel_size + 35) + 5;
-    draw_rect(fb_base, screen_width, start_x, legend_y, 8, 8, 0xFF0000);
-    draw_string(
-        fb_base,
-        screen_width,
-        start_x + 12,
-        legend_y,
-        "Used",
-        0xFFFFFF,
-    );
-    draw_rect(
-        fb_base,
-        screen_width,
-        start_x + 60,
-        legend_y,
-        8,
-        8,
-        0x00FF00,
-    );
-    draw_string(
-        fb_base,
-        screen_width,
-        start_x + 72,
-        legend_y,
-        "Free",
-        0xFFFFFF,
-    );
+    unsafe {
+        draw_rect(fb_base, screen_width, start_x, legend_y, 8, 8, 0xFF0000);
+        draw_string(
+            fb_base,
+            screen_width,
+            start_x + 12,
+            legend_y,
+            "Used",
+            0xFFFFFF,
+        );
+        draw_rect(
+            fb_base,
+            screen_width,
+            start_x + 60,
+            legend_y,
+            8,
+            8,
+            0x00FF00,
+        );
+        draw_string(
+            fb_base,
+            screen_width,
+            start_x + 72,
+            legend_y,
+            "Free",
+            0xFFFFFF,
+        );
+    }
 }
 
 // =============================================================================

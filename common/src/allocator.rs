@@ -30,7 +30,7 @@ impl SlabCache {
     }
 
     // ブロックを割り当て
-    unsafe fn allocate(&self) -> *mut u8 {
+    unsafe fn allocate(&self) -> Option<NonNull<u8>> {
         unsafe {
             let free_list = &mut *self.free_list.get();
 
@@ -38,10 +38,10 @@ impl SlabCache {
                 // フリーリストから取り出す
                 let ptr = node.as_ptr() as *mut u8;
                 *free_list = (*node.as_ptr()).next;
-                ptr
+                NonNull::new(ptr)
             } else {
-                // フリーリストが空の場合はnull（後でラージアロケータにフォールバック）
-                null_mut()
+                // フリーリストが空の場合はNone（後でラージアロケータにフォールバック）
+                None
             }
         }
     }
@@ -152,7 +152,7 @@ impl SlabAllocator {
     }
 
     // 大きなサイズ用のアロケート（バンプアロケータ）
-    unsafe fn allocate_large(&self, layout: Layout) -> *mut u8 {
+    unsafe fn allocate_large(&self, layout: Layout) -> Option<NonNull<u8>> {
         unsafe {
             let next = *self.large_alloc_next.get();
             let end = *self.large_alloc_end.get();
@@ -161,10 +161,10 @@ impl SlabAllocator {
             let alloc_end = alloc_start.saturating_add(layout.size());
 
             if alloc_end > end {
-                null_mut()
+                None
             } else {
                 *self.large_alloc_next.get() = alloc_end;
-                alloc_start as *mut u8
+                NonNull::new(alloc_start as *mut u8)
             }
         }
     }
@@ -217,15 +217,16 @@ unsafe impl GlobalAlloc for SlabAllocator {
         let size = layout.size().max(layout.align());
 
         // サイズクラスを探す
-        if let Some(class_idx) = Self::size_to_class(size) {
-            let ptr = unsafe { self.caches[class_idx].allocate() };
-            if !ptr.is_null() {
-                return ptr;
-            }
+        if let Some(class_idx) = Self::size_to_class(size)
+            && let Some(ptr) = unsafe { self.caches[class_idx].allocate() }
+        {
+            return ptr.as_ptr();
         }
 
         // スラブから割り当てできない場合は大きなサイズ用アロケータを使用
         unsafe { self.allocate_large(layout) }
+            .map(|ptr| ptr.as_ptr())
+            .unwrap_or(null_mut())
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {

@@ -7,22 +7,12 @@ pub const EFI_SUCCESS: EfiStatus = 0;
 
 // GUID (プロトコル識別子)
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct EfiGuid {
     pub data1: u32,
     pub data2: u16,
     pub data3: u16,
     pub data4: [u8; 8],
-}
-
-impl EfiGuid {
-    /// GUIDを比較
-    pub fn equals(&self, other: &EfiGuid) -> bool {
-        self.data1 == other.data1
-            && self.data2 == other.data2
-            && self.data3 == other.data3
-            && self.data4 == other.data4
-    }
 }
 
 // Graphics Output Protocol GUID
