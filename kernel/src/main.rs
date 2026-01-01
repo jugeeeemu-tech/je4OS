@@ -37,6 +37,9 @@ use vitros_common::uefi;
 #[cfg(feature = "visualize-allocator")]
 use crate::allocator_visualization;
 
+// カーネル仮想アドレスベース（ブートローダと同じ値）
+const KERNEL_VMA: u64 = 0xFFFF800000000000;
+
 // グローバルフレームバッファライター
 lazy_static! {
     static ref GLOBAL_FRAMEBUFFER: Mutex<Option<FramebufferWriter>> = Mutex::new(None);
@@ -210,13 +213,14 @@ extern "efiapi" fn kernel_main() -> ! {
 
 /// 実際のカーネルメイン関数 (System V ABI)
 /// この関数が呼ばれた時点で既にカーネルスタック上で動作している
-extern "C" fn kernel_main_inner(boot_info_ptr: &'static BootInfo) -> ! {
+extern "C" fn kernel_main_inner(boot_info_phys_addr: u64) -> ! {
     info!("=== Kernel Started ===");
     info!("Running on kernel stack");
 
-    // boot_infoを新しいスタックにコピー
-    // この時点ではまだ低位アドレス（0x90000）にアクセス可能
-    let boot_info = *boot_info_ptr;
+    // 物理アドレスを高位仮想アドレスに変換してboot_infoにアクセス
+    // 低位物理アドレスは高位にマッピングされているため、コピー不要
+    let boot_info_virt_addr = KERNEL_VMA + boot_info_phys_addr;
+    let boot_info = unsafe { &*(boot_info_virt_addr as *const BootInfo) };
 
     // GDTを初期化
     info!("Initializing GDT...");

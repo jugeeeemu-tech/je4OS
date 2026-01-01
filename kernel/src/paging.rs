@@ -246,31 +246,43 @@ static mut KERNEL_PML4: PageTable = PageTable::new();
 static mut KERNEL_PDP_LOW: PageTable = PageTable::new(); // 低位アドレス用（0x0〜）- 互換性のため残す
 static mut KERNEL_PDP_HIGH: PageTable = PageTable::new(); // 高位アドレス用（0xFFFF_8000_0000_0000〜）
 
-// Page Directory（2MBページを使用するため、4GB分確保）
-static mut KERNEL_PD_LOW: [PageTable; 4] = [
+// Page Directory（2MBページを使用するため、8GB分確保）
+static mut KERNEL_PD_LOW: [PageTable; 8] = [
+    PageTable::new(),
+    PageTable::new(),
+    PageTable::new(),
+    PageTable::new(),
     PageTable::new(),
     PageTable::new(),
     PageTable::new(),
     PageTable::new(),
 ];
 
-static mut KERNEL_PD_HIGH: [PageTable; 4] = [
+static mut KERNEL_PD_HIGH: [PageTable; 8] = [
+    PageTable::new(),
+    PageTable::new(),
+    PageTable::new(),
+    PageTable::new(),
     PageTable::new(),
     PageTable::new(),
     PageTable::new(),
     PageTable::new(),
 ];
 
-// Page Table（4GB全体を4KBページでマップするため2,048個のPTが必要）
+// Page Table（8GB全体を4KBページでマップするため4,096個のPTが必要）
 // 各PT = 512エントリ × 4KB = 2MB
-// 4GB = 2,048個のPT
-static mut KERNEL_PT_LOW: [PageTable; 2048] = [PageTable::new(); 2048];
-static mut KERNEL_PT_HIGH: [PageTable; 2048] = [PageTable::new(); 2048];
+// 8GB = 4,096個のPT
+static mut KERNEL_PT_LOW: [PageTable; 4096] = [PageTable::new(); 4096];
+static mut KERNEL_PT_HIGH: [PageTable; 4096] = [PageTable::new(); 4096];
 
 /// ページングシステムを初期化してCR3に設定
 /// 物理メモリの直接マッピング（Direct Mapping）を実装
-/// - 低位アドレス（0-4GB）: identity mapping（互換性のため残す）
-/// - 高位アドレス（0xFFFF_8000_0000_0000+）: カーネル用の直接マッピング
+/// - 低位アドレス（0-8GB）: identity mapping（互換性のため残す）
+/// - 高位アドレス（0xFFFF_8000_0000_0000+）: カーネル用の直接マッピング（8GB分）
+///
+/// TODO: 現在は固定で8GBマッピングしているが、本来はUEFIから渡されたメモリマップ情報を基に、
+///       実際に利用可能なメモリ範囲のみを動的にマッピングすべき。
+///       参照: https://github.com/jugeeeemu-tech/VitrOS/issues/3
 ///
 /// # Errors
 /// * `PagingError::AddressConversionFailed` - アドレス変換に失敗した場合
@@ -290,11 +302,11 @@ pub fn init() -> Result<(), PagingError> {
         (*pml4).clear();
         (*pdp_low).clear();
         (*pdp_high).clear();
-        for i in 0..4 {
+        for i in 0..8 {
             (*pd_low)[i].clear();
             (*pd_high)[i].clear();
         }
-        for i in 0..2048 {
+        for i in 0..4096 {
             (*pt_low)[i].clear();
             (*pt_high)[i].clear();
         }
@@ -307,8 +319,8 @@ pub fn init() -> Result<(), PagingError> {
         // PML4[0] -> PDP_LOW
         (*pml4).entry(0).set((*pdp_low).physical_address()?, flags);
 
-        // PDP_LOW[0-3] -> PD_LOW[0-3]（4GB分）
-        for i in 0..4 {
+        // PDP_LOW[0-7] -> PD_LOW[0-7]（8GB分）
+        for i in 0..8 {
             (*pdp_low)
                 .entry(i)
                 .set((*pd_low)[i].physical_address()?, flags);
@@ -321,19 +333,19 @@ pub fn init() -> Result<(), PagingError> {
             .entry(256)
             .set((*pdp_high).physical_address()?, flags);
 
-        // PDP_HIGH[0-3] -> PD_HIGH[0-3]（4GB分）
-        for i in 0..4 {
+        // PDP_HIGH[0-7] -> PD_HIGH[0-7]（8GB分）
+        for i in 0..8 {
             (*pdp_high)
                 .entry(i)
                 .set((*pd_high)[i].physical_address()?, flags);
         }
 
-        // === 4GB全体を4KBページでマッピング ===
-        // 各PD（4個）が512個のPTを参照し、各PTが512個の4KBページをマップ
-        // 合計: 4 × 512 × 512 × 4KB = 4GB
+        // === 8GB全体を4KBページでマッピング ===
+        // 各PD（8個）が512個のPTを参照し、各PTが512個の4KBページをマップ
+        // 合計: 8 × 512 × 512 × 4KB = 8GB
 
         // 各PDエントリにPTをリンク
-        for pd_idx in 0..4 {
+        for pd_idx in 0..8 {
             for entry_idx in 0..PAGE_TABLE_ENTRY_COUNT {
                 let pt_idx = pd_idx * PAGE_TABLE_ENTRY_COUNT + entry_idx;
                 (*pd_low)[pd_idx]
@@ -346,7 +358,7 @@ pub fn init() -> Result<(), PagingError> {
         }
 
         // 各PTのエントリに4KBページをマップ
-        for pt_idx in 0..2048 {
+        for pt_idx in 0..4096 {
             for page_idx in 0..PAGE_TABLE_ENTRY_COUNT {
                 // 物理アドレス = (PT番号 × 2MB) + (ページ番号 × 4KB)
                 let physical_addr =
@@ -379,7 +391,7 @@ pub fn init() -> Result<(), PagingError> {
         let page_idx_in_pt = page_num % PAGE_TABLE_ENTRY_COUNT;
 
         // インデックスの範囲検証
-        if pt_array_idx >= 2048 {
+        if pt_array_idx >= 4096 {
             return Err(PagingError::GuardPageSetupFailed);
         }
         if page_idx_in_pt >= PAGE_TABLE_ENTRY_COUNT {

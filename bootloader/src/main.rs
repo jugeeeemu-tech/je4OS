@@ -7,10 +7,9 @@ use vitros_common::boot_info::{BootInfo, FramebufferInfo, MemoryRegion};
 use vitros_common::elf::{Elf64Header, Elf64ProgramHeader, PT_LOAD};
 use vitros_common::uefi::*;
 
-// BOOT_INFOをカーネル直前の固定アドレスに配置
-// 0x90000 (576KB) - カーネル(0x100000=1MB)の手前で安全
-// この領域はConventional Memoryで、ExitBootServices後も有効
-const BOOT_INFO_ADDR: usize = 0x90000;
+// BOOT_INFOを静的変数として配置
+// リンカがアドレスを決定し、物理アドレスをカーネルに渡す
+static mut BOOT_INFO: BootInfo = BootInfo::new();
 
 // グローバルなConOut（初期化後に設定）
 static mut CON_OUT: Option<*mut EfiSimpleTextOutputProtocol> = None;
@@ -165,6 +164,10 @@ static mut BOOT_PD_HIGH: [PageTable; 8] = [
 ];
 
 /// ブートローダー用の初期ページテーブルをセットアップ
+///
+/// TODO: 現在は固定で8GBマッピングしているが、本来はUEFIから渡されたImageBaseと
+///       メモリマップ情報を基に、必要な範囲のみを動的にマッピングすべき。
+///       参照: https://github.com/jugeeeemu-tech/VitrOS/issues/3
 unsafe fn setup_initial_page_tables() -> u64 {
     let flags = PAGE_PRESENT | PAGE_WRITABLE;
     let huge_flags = flags | PAGE_HUGE;
@@ -304,9 +307,8 @@ extern "efiapi" fn efi_main(
         )
     };
 
-    // BOOT_INFOを固定アドレス（0x90000）に配置
-    let boot_info = unsafe { &mut *(BOOT_INFO_ADDR as *mut BootInfo) };
-    *boot_info = BootInfo::new();
+    // BOOT_INFOを静的変数から取得
+    let boot_info = unsafe { &mut *core::ptr::addr_of_mut!(BOOT_INFO) };
 
     // フレームバッファ情報を設定
     boot_info.framebuffer = FramebufferInfo {
@@ -386,7 +388,8 @@ extern "efiapi" fn efi_main(
             };
         }
         boot_info.memory_map_count = entry_count.min(boot_info.memory_map.len());
-        println_uefi!("[INFO] BOOT_INFO at 0x{:X}", BOOT_INFO_ADDR);
+        let boot_info_addr = core::ptr::addr_of!(BOOT_INFO) as u64;
+        println_uefi!("[INFO] BOOT_INFO at 0x{:X}", boot_info_addr);
         println_uefi!(
             "[INFO] BOOT_INFO.memory_map_count = {}",
             boot_info.memory_map_count
@@ -480,16 +483,16 @@ extern "efiapi" fn efi_main(
     // CR3にページテーブルをロード
     unsafe { load_page_tables(pml4_addr) };
 
-    // カーネルジャンプ直前にBOOT_INFOを再確認
-    let boot_info_check = unsafe { &*(BOOT_INFO_ADDR as *const BootInfo) };
+    // BOOT_INFOの物理アドレスを取得
+    let boot_info_phys_addr = core::ptr::addr_of!(BOOT_INFO) as u64;
 
     // カーネルの高位仮想アドレスを計算（kernel_entryは物理アドレス）
     let kernel_high_addr = kernel_entry + KERNEL_VMA;
 
-    // カーネルにジャンプ (efiapi calling convention to match kernel entry point)
-    type KernelEntry = extern "efiapi" fn(&'static BootInfo) -> !;
+    // カーネルにジャンプ (物理アドレスを渡す)
+    type KernelEntry = extern "efiapi" fn(u64) -> !;
     let kernel_fn: KernelEntry = unsafe { core::mem::transmute(kernel_high_addr as *const ()) };
-    kernel_fn(boot_info_check);
+    kernel_fn(boot_info_phys_addr);
 }
 
 /// ELFファイルからカーネルをロード
