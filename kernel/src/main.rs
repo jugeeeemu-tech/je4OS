@@ -18,6 +18,7 @@ mod paging;
 mod pci;
 mod pit;
 mod serial;
+mod sync;
 mod task;
 mod timer;
 
@@ -83,6 +84,17 @@ fn hlt() {
     }
 }
 
+/// カーネル起動完了マーカー
+/// GDBブレークポイント用（シンボル名を固定）
+#[unsafe(no_mangle)]
+#[inline(never)]
+pub extern "C" fn boot_complete() {
+    // 最適化で消されないようにvolatile read
+    unsafe {
+        core::ptr::read_volatile(&0u8);
+    }
+}
+
 // =============================================================================
 // タスクエントリポイント
 // =============================================================================
@@ -102,28 +114,16 @@ extern "C" fn idle_task() -> ! {
 extern "C" fn task1() -> ! {
     info!("[Task1] Started (High Priority)");
 
+    // 新Writer方式：固有の描画領域を取得
+    let region = graphics::Region::new(400, 500, 300, 20);
+    let buffer = graphics::compositor::register_writer(region).expect("Failed to register writer");
+    let mut writer = graphics::TaskWriter::new(buffer, 0xFFFFFFFF);
+
     let mut counter = 0u64;
     loop {
-        // info!("[Task1] Counter: {}", counter);
-
-        // 固定位置（X=400, Y=500）にカウンタを表示
-        if counter % 70000000 == 0 || true {
-            {
-                let mut fb = GLOBAL_FRAMEBUFFER.lock();
-                if let Some(writer) = fb.as_mut() {
-                    writer.set_position(400, 500);
-                    writer.clear_area(30, 0x00000000); // 30文字分、黒色でクリア
-                }
-            }
-            fb_writeln(&alloc::format!("[Task1 High] Count: {}", counter));
-        }
-
+        writer.clear(0x00000000);
+        let _ = write!(writer, "[Task1 High] Count: {}", counter);
         counter += 1;
-
-        // 忙しいループで時間を消費
-        // for _ in 0..1_000 {
-        //     core::hint::spin_loop();
-        // }
     }
 }
 
@@ -131,27 +131,16 @@ extern "C" fn task1() -> ! {
 extern "C" fn task2() -> ! {
     info!("[Task2] Started (Medium Priority)");
 
+    // 新Writer方式：固有の描画領域を取得
+    let region = graphics::Region::new(400, 520, 300, 20);
+    let buffer = graphics::compositor::register_writer(region).expect("Failed to register writer");
+    let mut writer = graphics::TaskWriter::new(buffer, 0xFFFFFFFF);
+
     let mut counter = 0u64;
     loop {
-        // info!("[Task2] Counter: {}", counter);
-
-        // 固定位置（X=400, Y=520）にカウンタを表示
-        if counter % 70000000 == 0 || true {
-            {
-                let mut fb = GLOBAL_FRAMEBUFFER.lock();
-                if let Some(writer) = fb.as_mut() {
-                    writer.set_position(400, 520);
-                    writer.clear_area(30, 0x00000000); // 30文字分、黒色でクリア
-                }
-            }
-            fb_writeln(&alloc::format!("[Task2 Med ] Count: {}", counter));
-        }
-
+        writer.clear(0x00000000);
+        let _ = write!(writer, "[Task2 Med ] Count: {}", counter);
         counter += 1;
-        // 忙しいループで時間を消費
-        // for _ in 0..1_000 {
-        //     core::hint::spin_loop();
-        // }
     }
 }
 
@@ -159,27 +148,16 @@ extern "C" fn task2() -> ! {
 extern "C" fn task3() -> ! {
     info!("[Task3] Started (Low Priority)");
 
+    // 新Writer方式：固有の描画領域を取得
+    let region = graphics::Region::new(400, 540, 300, 20);
+    let buffer = graphics::compositor::register_writer(region).expect("Failed to register writer");
+    let mut writer = graphics::TaskWriter::new(buffer, 0xFFFFFFFF);
+
     let mut counter = 0u64;
     loop {
-        // info!("[Task3] Counter: {}", counter);
-
-        // 固定位置（X=400, Y=540）にカウンタを表示
-        if counter % 70000000 == 0 || true {
-            {
-                let mut fb = GLOBAL_FRAMEBUFFER.lock();
-                if let Some(writer) = fb.as_mut() {
-                    writer.set_position(400, 540);
-                    writer.clear_area(30, 0x00000000); // 30文字分、黒色でクリア
-                }
-            }
-            fb_writeln(&alloc::format!("[Task3 Low ] Count: {}", counter));
-        }
-
+        writer.clear(0x00000000);
+        let _ = write!(writer, "[Task3 Low ] Count: {}", counter);
         counter += 1;
-        // 忙しいループで時間を消費
-        // for _ in 0..1_000 {
-        //     core::hint::spin_loop();
-        // }
     }
 }
 
@@ -349,9 +327,32 @@ extern "C" fn kernel_main_inner(boot_info_phys_addr: u64) -> ! {
         apic::init_timer(TIMER_FREQUENCY_HZ as u32).expect("Failed to initialize APIC Timer");
 
         // =================================================================
+        // Compositorを初期化
+        // =================================================================
+        info!("Initializing Compositor...");
+        graphics::compositor::init_compositor(graphics::compositor::CompositorConfig {
+            fb_base: fb_virt_base,
+            fb_width: boot_info.framebuffer.width,
+            fb_height: boot_info.framebuffer.height,
+            refresh_interval_ticks: 10,
+        });
+        info!("Compositor initialized");
+
+        // =================================================================
         // プリエンプティブマルチタスキングのタスクを作成（割り込み無効状態で）
         // =================================================================
         info!("Creating tasks for preemptive multitasking...");
+
+        // Compositorタスク（優先度：最高）
+        let compositor = Box::new(
+            task::Task::new(
+                "Compositor",
+                task::priority::MAX,
+                graphics::compositor::compositor_task,
+            )
+            .expect("Failed to create Compositor task"),
+        );
+        task::add_task(*compositor);
 
         // アイドルタスク（優先度：最低）
         let idle =
@@ -477,6 +478,7 @@ extern "C" fn kernel_main_inner(boot_info_phys_addr: u64) -> ! {
     }
 
     info!("Entering main loop");
+    boot_complete();
 
     // メインループ
     loop {
