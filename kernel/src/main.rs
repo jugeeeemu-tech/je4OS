@@ -94,6 +94,8 @@ extern "C" fn task1() -> ! {
         writer.clear(0x00000000);
         let _ = write!(writer, "[Task1 High] Count: {}", counter);
         counter += 1;
+        // 他のタスクとCompositorに実行機会を与える
+        task::yield_now();
     }
 }
 
@@ -111,6 +113,8 @@ extern "C" fn task2() -> ! {
         writer.clear(0x00000000);
         let _ = write!(writer, "[Task2 Med ] Count: {}", counter);
         counter += 1;
+        // 他のタスクとCompositorに実行機会を与える
+        task::yield_now();
     }
 }
 
@@ -128,6 +132,8 @@ extern "C" fn task3() -> ! {
         writer.clear(0x00000000);
         let _ = write!(writer, "[Task3 Low ] Count: {}", counter);
         counter += 1;
+        // 他のタスクとCompositorに実行機会を与える
+        task::yield_now();
     }
 }
 

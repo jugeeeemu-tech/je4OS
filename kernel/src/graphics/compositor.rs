@@ -174,9 +174,37 @@ pub fn init_compositor(config: CompositorConfig) {
 ///
 /// # Returns
 /// 共有バッファへの参照。Compositorが未初期化ならNone
+///
+/// # Note
+/// 割り込みを無効化してロックを取得することで、
+/// ロック保持中にプリエンプトされることを防ぎます。
 pub fn register_writer(region: Region) -> Option<SharedBuffer> {
-    let mut comp = COMPOSITOR.lock();
-    comp.as_mut().map(|c| c.register_writer(region))
+    // 割り込みを無効化してロック取得（スピンロック競合回避）
+    let flags = unsafe {
+        let flags: u64;
+        core::arch::asm!(
+            "pushfq",
+            "pop {}",
+            "cli",
+            out(reg) flags,
+            options(nomem, nostack)
+        );
+        flags
+    };
+
+    let result = {
+        let mut comp = COMPOSITOR.lock();
+        comp.as_mut().map(|c| c.register_writer(region))
+    };
+
+    // 割り込みを元の状態に復元
+    unsafe {
+        if flags & 0x200 != 0 {
+            core::arch::asm!("sti", options(nomem, nostack));
+        }
+    }
+
+    result
 }
 
 /// Compositorタスクのエントリポイント
@@ -186,11 +214,32 @@ pub extern "C" fn compositor_task() -> ! {
     crate::info!("[Compositor] Started");
 
     loop {
-        // フレームを合成
+        // フレームを合成（割り込み無効でロック取得）
         {
-            let mut comp = COMPOSITOR.lock();
-            if let Some(compositor) = comp.as_mut() {
-                compositor.compose_frame();
+            let flags = unsafe {
+                let flags: u64;
+                core::arch::asm!(
+                    "pushfq",
+                    "pop {}",
+                    "cli",
+                    out(reg) flags,
+                    options(nomem, nostack)
+                );
+                flags
+            };
+
+            {
+                let mut comp = COMPOSITOR.lock();
+                if let Some(compositor) = comp.as_mut() {
+                    compositor.compose_frame();
+                }
+            }
+
+            // 割り込みを元の状態に復元
+            unsafe {
+                if flags & 0x200 != 0 {
+                    core::arch::asm!("sti", options(nomem, nostack));
+                }
             }
         }
 
