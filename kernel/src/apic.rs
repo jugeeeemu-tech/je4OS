@@ -250,7 +250,10 @@ pub fn calibrate_timer() -> Result<(), ApicError> {
         const MEASUREMENTS: usize = 5;
         const CALIBRATION_MS: u32 = 50;
 
-        crate::info!("Calibrating APIC Timer using PIT ({} measurements)...", MEASUREMENTS);
+        crate::info!(
+            "Calibrating APIC Timer using PIT ({} measurements)...",
+            MEASUREMENTS
+        );
 
         let mut measurements = [0u32; MEASUREMENTS];
 
