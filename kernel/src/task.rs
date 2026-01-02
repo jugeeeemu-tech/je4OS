@@ -1011,3 +1011,51 @@ pub unsafe extern "C" fn switch_context(old_context: *mut Context, new_context: 
         "ret",
     )
 }
+
+/// 指定したミリ秒数だけ現在のタスクをスリープさせる
+///
+/// Linux の `schedule_timeout()` に倣った実装です。
+/// タイマーを登録し、タスクをブロック状態にしてスケジューラに譲ります。
+/// タイマー期限切れ時にコールバックでタスクを起床させます。
+///
+/// # Arguments
+/// * `ms` - スリープ時間（ミリ秒）
+///
+/// # Note
+/// - タイマー周波数が100Hz（10ms周期）のため、10ms未満の精度は保証されない
+/// - 0msの場合は yield_now() と同等の動作（他タスクに実行機会を与える）
+/// - 割り込みコンテキストからは呼び出し不可
+///
+/// # Panics
+/// 割り込みコンテキストから呼び出された場合（デバッグビルドのみ）
+pub fn sleep_ms(ms: u64) {
+    // 安全性チェック: 割り込みコンテキストではブロック不可
+    debug_assert!(
+        !is_interrupt_context(),
+        "sleep_ms() cannot be called from interrupt context"
+    );
+
+    // 0ms の場合は yield して即座にリターン
+    if ms == 0 {
+        yield_now();
+        return;
+    }
+
+    // 現在のタスクIDを取得（TaskId は Copy なのでクロージャにキャプチャ可能）
+    let task_id = current_task_id();
+
+    // ミリ秒をtick数に変換（最小1tickを保証）
+    let ticks = crate::timer::ms_to_ticks(ms).max(1);
+
+    // タイマーを登録: 期限切れ時に unblock_task を呼び出す
+    crate::timer::register_timer(
+        ticks,
+        Box::new(move || {
+            unblock_task(task_id);
+        }),
+    );
+
+    // タスクをブロック状態にしてスケジュール
+    // タイマーが起床するまで他のタスクが実行される
+    block_current_task();
+}
