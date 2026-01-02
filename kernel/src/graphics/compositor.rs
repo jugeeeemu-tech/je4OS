@@ -194,10 +194,7 @@ pub extern "C" fn compositor_task() -> ! {
             }
         }
 
-        // 次のリフレッシュまで待機
-        // シンプルなビジーウェイト（将来的にはタイマーベースのスリープに変更）
-        for _ in 0..100_000 {
-            core::hint::spin_loop();
-        }
+        // 次のリフレッシュまで待機（約60fps = 16ms間隔）
+        crate::task::sleep_ms(16);
     }
 }
