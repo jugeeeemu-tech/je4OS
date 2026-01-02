@@ -230,6 +230,12 @@ unsafe impl GlobalAlloc for SlabAllocator {
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // ZST（サイズ0）の場合は何もしない
+        // RustはZST BoxにNonNull::dangling()を使用し、実際のメモリは割り当てられていない
+        if layout.size() == 0 {
+            return;
+        }
+
         let size = layout.size().max(layout.align());
 
         // サイズクラスに該当する場合は解放
