@@ -85,17 +85,19 @@ extern "C" fn task1() -> ! {
     info!("[Task1] Started (High Priority)");
 
     // 新Writer方式：固有の描画領域を取得
-    let region = graphics::Region::new(400, 500, 300, 20);
+    let region = graphics::Region::new(400, 500, 350, 20);
     let buffer = graphics::compositor::register_writer(region).expect("Failed to register writer");
     let mut writer = graphics::TaskWriter::new(buffer, 0xFFFFFFFF);
 
     let mut counter = 0u64;
     loop {
         writer.clear(0x00000000);
-        let _ = write!(writer, "[Task1 High] Count: {}", counter);
+        // tick数を表示してタイマー割り込みが発生しているか確認
+        let tick = timer::current_tick();
+        let _ = write!(writer, "[Task1] Count:{} Tick:{}", counter, tick);
         counter += 1;
-        // 他のタスクとCompositorに実行機会を与える
-        task::yield_now();
+        // 描画頻度を制限（16ms = 約60fps）
+        task::sleep_ms(16);
     }
 }
 
@@ -113,8 +115,8 @@ extern "C" fn task2() -> ! {
         writer.clear(0x00000000);
         let _ = write!(writer, "[Task2 Med ] Count: {}", counter);
         counter += 1;
-        // 他のタスクとCompositorに実行機会を与える
-        task::yield_now();
+        // 描画頻度を制限（16ms = 約60fps）
+        task::sleep_ms(16);
     }
 }
 
@@ -132,8 +134,8 @@ extern "C" fn task3() -> ! {
         writer.clear(0x00000000);
         let _ = write!(writer, "[Task3 Low ] Count: {}", counter);
         counter += 1;
-        // 他のタスクとCompositorに実行機会を与える
-        task::yield_now();
+        // 描画頻度を制限（16ms = 約60fps）
+        task::sleep_ms(16);
     }
 }
 
@@ -284,10 +286,10 @@ extern "C" fn kernel_main_inner(boot_info_phys_addr: u64) -> ! {
         info!("Heap initialized successfully");
 
         // タイマーシステムを初期化（ヒープが必要）
-        const TIMER_FREQUENCY_HZ: u64 = 100;
+        const TIMER_FREQUENCY_HZ: u64 = 250;
         timer::init(TIMER_FREQUENCY_HZ);
 
-        // APIC Timerを初期化（100Hz）
+        // APIC Timerを初期化（250Hz = 4msタイムスライス）
         info!("Initializing APIC Timer...");
         apic::init_timer(TIMER_FREQUENCY_HZ as u32).expect("Failed to initialize APIC Timer");
 
@@ -435,13 +437,9 @@ extern "C" fn kernel_main_inner(boot_info_phys_addr: u64) -> ! {
     info!("Entering main loop");
     boot_complete();
 
-    // メインループ
+    // KernelMainタスクは他のタスクに制御を譲り続ける
+    // タイマーコールバックはタイマー割り込みの出口で処理される
     loop {
-        // ペンディングキューのタイマーを処理
-        // この処理は割り込み有効状態で実行されるため、コールバック実行中も割り込みを受け付けられる
-        timer::process_pending_timers();
-
-        // CPUを省電力モードに（次の割り込みまで待機）
-        hlt()
+        task::yield_now();
     }
 }

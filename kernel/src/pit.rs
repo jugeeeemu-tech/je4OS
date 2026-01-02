@@ -50,27 +50,32 @@ unsafe fn inb(port: u16) -> u8 {
 /// # Arguments
 /// * `ms` - 待機時間（ミリ秒）
 pub fn sleep_ms(ms: u32) {
-    unsafe {
-        // PITのカウント値を計算（ミリ秒 -> カウント数）
-        let count = (PIT_FREQUENCY * ms / 1000) as u16;
+    // 1msずつ待機することで精度を上げる
+    for _ in 0..ms {
+        sleep_1ms();
+    }
+}
 
-        // Channel 0, Rate Generator mode (mode 2), binary counter
-        // Command: 0x34 = 0011 0100
+/// 1ミリ秒待機（内部関数）
+fn sleep_1ms() {
+    unsafe {
+        // 1ms = 1193 カウント（PIT_FREQUENCY / 1000）
+        let count: u16 = (PIT_FREQUENCY / 1000) as u16;
+
+        // Channel 0, Mode 0 (Interrupt on terminal count), binary counter
+        // Command: 0x30 = 0011 0000
         // - Channel 0 (bits 6-7: 00)
         // - Access mode: lobyte/hibyte (bits 4-5: 11)
-        // - Operating mode 2: rate generator (bits 1-3: 010)
+        // - Operating mode 0: interrupt on terminal count (bits 1-3: 000)
         // - Binary counter (bit 0: 0)
-        outb(ports::COMMAND, 0x34);
+        outb(ports::COMMAND, 0x30);
 
         // カウント値を設定（下位バイト、上位バイト）
         outb(ports::CHANNEL_0, (count & 0xFF) as u8);
         outb(ports::CHANNEL_0, ((count >> 8) & 0xFF) as u8);
 
-        // カウントが0になるまで待つ
-        // 現在のカウント値を読み取る（latch command）
-        outb(ports::COMMAND, 0x00);
-
         // 初回の読み取り
+        outb(ports::COMMAND, 0x00);
         let mut last_count = read_current_count();
 
         // カウントダウンが完了するまで待つ
@@ -78,8 +83,8 @@ pub fn sleep_ms(ms: u32) {
             outb(ports::COMMAND, 0x00); // latch command
             let current_count = read_current_count();
 
-            // カウントが一巡したら（0xFFFF -> 小さい値）終了
-            if current_count > last_count {
+            // Mode 0: カウンタが0になるか、再ロードされて大きくなったら終了
+            if current_count == 0 || current_count > last_count {
                 break;
             }
             last_count = current_count;

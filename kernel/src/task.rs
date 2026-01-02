@@ -952,9 +952,11 @@ pub fn schedule() {
     // 古いタスクのコンテキストを保存する準備
     let old_context_ptr = if let Some(mut old_task) = current.take() {
         // 蓄積された実行時間でvruntimeを更新（Normalクラスのみ有効）
+        // accumulatedが0でも最小値(1)を加算して、同じタスクが連続選択されることを防ぐ
         let accumulated = ACCUMULATED_RUNTIME.swap(0, Ordering::Relaxed);
-        if accumulated > 0 && old_task.sched_class() == SchedulingClass::Normal {
-            old_task.update_vruntime(accumulated);
+        if old_task.sched_class() == SchedulingClass::Normal {
+            let delta = if accumulated > 0 { accumulated } else { 1 };
+            old_task.update_vruntime(delta);
         }
 
         // 実行中だった場合は準備完了状態に変更

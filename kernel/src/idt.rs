@@ -201,9 +201,8 @@ extern "C" fn timer_handler_inner() {
     timer::check_timers();
 
     // 現在のタスクのvruntimeを更新（CFS風スケジューリング）
-    // タイマー周波数は100Hzなので、1tick = 10ms = 10,000,000ns
-    // const TIMER_PERIOD_NS: u64 = 10_000_000;
-    const TIMER_PERIOD_NS: u64 = 10_000_000;
+    // タイマー周波数は250Hzなので、1tick = 4ms = 4,000,000ns
+    const TIMER_PERIOD_NS: u64 = 4_000_000;
     crate::task::update_current_task_vruntime(TIMER_PERIOD_NS);
 
     // スケジューリングが必要であることを示すフラグをセット
