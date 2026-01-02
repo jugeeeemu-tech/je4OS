@@ -20,6 +20,9 @@ static HPET_FREQUENCY: AtomicU64 = AtomicU64::new(0);
 /// HPETのカウント周期（フェムト秒/カウント）
 static HPET_PERIOD_FS: AtomicU64 = AtomicU64::new(0);
 
+/// HPET初期化時のカウンタ値（経過時間計算の基準点）
+static HPET_START_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 /// HPETレジスタオフセット
 mod registers {
     /// General Capabilities and ID Register
@@ -82,6 +85,10 @@ pub fn init(base_phys_addr: u64) {
         let config = read_hpet_reg(registers::GENERAL_CONFIG);
         write_hpet_reg(registers::GENERAL_CONFIG, config | 1);
 
+        // 初期カウンタ値を保存（経過時間計算の基準点）
+        let start_counter = read_hpet_reg(registers::MAIN_COUNTER);
+        HPET_START_COUNTER.store(start_counter, Ordering::SeqCst);
+
         HPET_AVAILABLE.store(true, Ordering::SeqCst);
 
         crate::info!(
@@ -141,4 +148,52 @@ pub fn delay_us(us: u64) {
 /// 指定ミリ秒間待機
 pub fn delay_ms(ms: u64) {
     delay_ns(ms * 1_000_000);
+}
+
+// ============================================================================
+// 経過時間取得API
+// ============================================================================
+
+/// HPET初期化からの経過カウント数を取得
+fn elapsed_counts() -> u64 {
+    let current = read_counter();
+    let start = HPET_START_COUNTER.load(Ordering::SeqCst);
+    current.wrapping_sub(start)
+}
+
+/// HPET初期化からの経過時間を取得（ナノ秒）
+///
+/// HPETが利用不可の場合は0を返します。
+pub fn elapsed_ns() -> u64 {
+    if !is_available() {
+        return 0;
+    }
+
+    let period_fs = HPET_PERIOD_FS.load(Ordering::SeqCst);
+    if period_fs == 0 {
+        return 0;
+    }
+
+    let counts = elapsed_counts();
+    // counts * period_fs = フェムト秒
+    // フェムト秒 / 10^6 = ナノ秒
+    // オーバーフロー対策: 先に割ってから掛ける
+    // period_fs は通常 ~10,000,000 fs なので、counts * period_fs がオーバーフローしやすい
+    // counts / (10^6 / period_fs) = counts * period_fs / 10^6
+    (counts / 1_000_000) * period_fs + (counts % 1_000_000) * period_fs / 1_000_000
+}
+
+/// HPET初期化からの経過時間を取得（マイクロ秒）
+pub fn elapsed_us() -> u64 {
+    elapsed_ns() / 1_000
+}
+
+/// HPET初期化からの経過時間を取得（ミリ秒）
+pub fn elapsed_ms() -> u64 {
+    elapsed_ns() / 1_000_000
+}
+
+/// HPET初期化からの経過時間を取得（秒）
+pub fn elapsed_secs() -> u64 {
+    elapsed_ns() / 1_000_000_000
 }
