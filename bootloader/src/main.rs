@@ -163,14 +163,47 @@ static mut BOOT_PD_HIGH: [PageTable; 8] = [
     PageTable::new(),
 ];
 
+/// メモリマップを解析して最大物理アドレスを計算
+///
+/// # Arguments
+/// * `buffer` - メモリディスクリプタが格納されたバッファ
+/// * `entry_count` - エントリ数
+/// * `descriptor_size` - 各ディスクリプタのサイズ
+///
+/// # Returns
+/// 最大物理アドレス（メモリの終端）
+fn analyze_memory_map(buffer: &[u8], entry_count: usize, descriptor_size: usize) -> u64 {
+    let mut max_phys_addr: u64 = 0;
+
+    for i in 0..entry_count {
+        let offset = i * descriptor_size;
+        let desc = unsafe { &*(buffer.as_ptr().add(offset) as *const EfiMemoryDescriptor) };
+
+        let region_end = desc.physical_start + (desc.number_of_pages * 4096);
+        if region_end > max_phys_addr {
+            max_phys_addr = region_end;
+        }
+    }
+
+    max_phys_addr
+}
+
 /// ブートローダー用の初期ページテーブルをセットアップ
 ///
-/// TODO: 現在は固定で8GBマッピングしているが、本来はUEFIから渡されたImageBaseと
-///       メモリマップ情報を基に、必要な範囲のみを動的にマッピングすべき。
-///       参照: https://github.com/jugeeeemu-tech/VitrOS/issues/3
-unsafe fn setup_initial_page_tables() -> u64 {
+/// UEFIメモリマップから計算された最大物理アドレスに基づいて、
+/// 必要な範囲のみをマッピングする。
+///
+/// # Arguments
+/// * `max_phys_addr` - マッピングが必要な最大物理アドレス
+///
+/// # Returns
+/// PML4テーブルの物理アドレス
+unsafe fn setup_initial_page_tables(max_phys_addr: u64) -> u64 {
     let flags = PAGE_PRESENT | PAGE_WRITABLE;
     let huge_flags = flags | PAGE_HUGE;
+
+    // 必要なGB数を計算（切り上げ、最大8GBに制限）
+    let required_gb = (((max_phys_addr + (1 << 30) - 1) >> 30) as usize).min(8);
 
     unsafe {
         // PML4[0] -> PDP_LOW (低位アドレス: 0x0-0x7FFFFFFFFF)
@@ -179,23 +212,21 @@ unsafe fn setup_initial_page_tables() -> u64 {
         // PML4[256] -> PDP_HIGH (高位アドレス: 0xFFFF800000000000-)
         BOOT_PML4.entries[256] = &raw const BOOT_PDP_HIGH as u64 | flags;
 
-        // 低位: 最初の8GBをアイデンティティマッピング
-        for i in 0..8 {
+        // 必要なGB数分のみマッピング
+        for i in 0..required_gb {
+            // 低位: アイデンティティマッピング
             BOOT_PDP_LOW.entries[i] = &raw const BOOT_PD_LOW[i] as u64 | flags;
 
-            for j in 0..512 {
-                let phys_addr = ((i * 512 + j) * 2 * 1024 * 1024) as u64;
-                BOOT_PD_LOW[i].entries[j] = phys_addr | huge_flags;
-            }
-        }
-
-        // 高位: 最初の8GBを0xFFFF800000000000+にマッピング
-        for i in 0..8 {
+            // 高位: 0xFFFF800000000000+にマッピング
             BOOT_PDP_HIGH.entries[i] = &raw const BOOT_PD_HIGH[i] as u64 | flags;
 
             for j in 0..512 {
                 let phys_addr = ((i * 512 + j) * 2 * 1024 * 1024) as u64;
-                BOOT_PD_HIGH[i].entries[j] = phys_addr | huge_flags;
+                // 実際に必要なアドレス範囲のみマッピング
+                if phys_addr < max_phys_addr {
+                    BOOT_PD_LOW[i].entries[j] = phys_addr | huge_flags;
+                    BOOT_PD_HIGH[i].entries[j] = phys_addr | huge_flags;
+                }
             }
         }
 
@@ -388,11 +419,21 @@ extern "efiapi" fn efi_main(
             };
         }
         boot_info.memory_map_count = entry_count.min(boot_info.memory_map.len());
+
+        // メモリマップを解析して最大物理アドレスを計算
+        let max_phys_addr = analyze_memory_map(&buffer[..map_size], entry_count, descriptor_size);
+        boot_info.max_physical_address = max_phys_addr;
+
         let boot_info_addr = core::ptr::addr_of!(BOOT_INFO) as u64;
         println_uefi!("[INFO] BOOT_INFO at 0x{:X}", boot_info_addr);
         println_uefi!(
             "[INFO] BOOT_INFO.memory_map_count = {}",
             boot_info.memory_map_count
+        );
+        println_uefi!(
+            "[INFO] BOOT_INFO.max_physical_address = 0x{:X} ({} MB)",
+            boot_info.max_physical_address,
+            boot_info.max_physical_address / (1024 * 1024)
         );
         println_uefi!(
             "[INFO] BOOT_INFO.memory_map[0]: start=0x{:X}, size=0x{:X}, type={}",
@@ -477,19 +518,33 @@ extern "efiapi" fn efi_main(
 
     // ExitBootServices成功 - ここから先はBoot Servicesは使用不可
 
-    // ページテーブルをセットアップ
-    let pml4_addr = unsafe { setup_initial_page_tables() };
+    // BOOT_INFOを低位アドレス（4GB未満）にコピー
+    // UEFIがMMIOホールの影響でBOOT_INFOを高位アドレス（4GB以上）に配置する可能性があるため、
+    // カーネルが確実にアクセスできる低位アドレスにコピーする
+    //
+    // TODO: 将来的にはMMIOホールによって分断されたメモリ領域を適切にマッピングし、
+    //       高位アドレスに配置されたデータにもアクセスできるようにする。
+    //       参照: https://github.com/jugeeeemu-tech/VitrOS/issues/5
+    const LOW_BOOT_INFO_ADDR: u64 = 0x80000; // 512KB（安全な低位アドレス）
+    let boot_info_phys_addr = unsafe {
+        core::ptr::copy_nonoverlapping(
+            core::ptr::addr_of!(BOOT_INFO),
+            LOW_BOOT_INFO_ADDR as *mut BootInfo,
+            1,
+        );
+        LOW_BOOT_INFO_ADDR
+    };
+
+    // ページテーブルをセットアップ（UEFIメモリマップに基づいて必要な範囲のみマッピング）
+    let pml4_addr = unsafe { setup_initial_page_tables(boot_info.max_physical_address) };
 
     // CR3にページテーブルをロード
     unsafe { load_page_tables(pml4_addr) };
 
-    // BOOT_INFOの物理アドレスを取得
-    let boot_info_phys_addr = core::ptr::addr_of!(BOOT_INFO) as u64;
-
     // カーネルの高位仮想アドレスを計算（kernel_entryは物理アドレス）
     let kernel_high_addr = kernel_entry + KERNEL_VMA;
 
-    // カーネルにジャンプ (物理アドレスを渡す)
+    // カーネルにジャンプ (低位アドレスにコピーしたBOOT_INFOの物理アドレスを渡す)
     type KernelEntry = extern "efiapi" fn(u64) -> !;
     let kernel_fn: KernelEntry = unsafe { core::mem::transmute(kernel_high_addr as *const ()) };
     kernel_fn(boot_info_phys_addr);

@@ -51,7 +51,7 @@ fi
 
 qemu-system-x86_64 \
     -machine q35 \
-    -m 8G \
+    -m 4G \
     -no-reboot \
     -no-shutdown \
     -bios /usr/share/ovmf/OVMF.fd \

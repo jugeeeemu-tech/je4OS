@@ -178,10 +178,10 @@ extern "C" fn kernel_main_inner(boot_info_phys_addr: u64) -> ! {
     // ブートローダーが既にページングを設定し、高位アドレスで起動している
     info!("Running in higher-half (set up by bootloader)");
 
-    // カーネル用のページテーブルを作成（高位アドレスのみ、低位は自動的にアンマップ）
+    // カーネル用のページテーブルを作成（UEFIメモリマップに基づいて動的にマッピング）
     info!("Creating kernel page tables...");
-    paging::init().expect("Failed to initialize paging system");
-    info!("Kernel page tables created and loaded (low addresses now unmapped)");
+    paging::init(boot_info).expect("Failed to initialize paging system");
+    info!("Kernel page tables created and loaded");
 
     // GDTを高位アドレスで再ロード（念のため）
     info!("Reloading GDT...");

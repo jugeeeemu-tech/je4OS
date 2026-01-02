@@ -242,113 +242,116 @@ pub unsafe extern "C" fn switch_to_kernel_stack() {
 
 // グローバルページテーブルを静的に確保
 // 物理メモリの直接マッピング（Direct Mapping）を実装
+
+/// 最大サポートメモリ（GB単位）
+/// 静的配列のサイズを決定する - 4GB対応で約16MBのメモリ削減
+pub const MAX_SUPPORTED_MEMORY_GB: usize = 4;
+
+/// Page Table数（各PTは2MBをカバー）
+/// 4GB = 2048個のPT（512 * 4 = 2048）
+const PT_COUNT: usize = MAX_SUPPORTED_MEMORY_GB * 512;
+
 static mut KERNEL_PML4: PageTable = PageTable::new();
-static mut KERNEL_PDP_LOW: PageTable = PageTable::new(); // 低位アドレス用（0x0〜）- 互換性のため残す
 static mut KERNEL_PDP_HIGH: PageTable = PageTable::new(); // 高位アドレス用（0xFFFF_8000_0000_0000〜）
 
-// Page Directory（2MBページを使用するため、8GB分確保）
-static mut KERNEL_PD_LOW: [PageTable; 8] = [
-    PageTable::new(),
-    PageTable::new(),
-    PageTable::new(),
-    PageTable::new(),
-    PageTable::new(),
-    PageTable::new(),
-    PageTable::new(),
-    PageTable::new(),
-];
+// Page Directory（4GB分確保、高位アドレスのみ）
+static mut KERNEL_PD_HIGH: [PageTable; MAX_SUPPORTED_MEMORY_GB] =
+    [PageTable::new(); MAX_SUPPORTED_MEMORY_GB];
 
-static mut KERNEL_PD_HIGH: [PageTable; 8] = [
-    PageTable::new(),
-    PageTable::new(),
-    PageTable::new(),
-    PageTable::new(),
-    PageTable::new(),
-    PageTable::new(),
-    PageTable::new(),
-    PageTable::new(),
-];
-
-// Page Table（8GB全体を4KBページでマップするため4,096個のPTが必要）
+// Page Table（4GB全体を4KBページでマップするため2,048個のPTが必要、高位アドレスのみ）
 // 各PT = 512エントリ × 4KB = 2MB
-// 8GB = 4,096個のPT
-static mut KERNEL_PT_LOW: [PageTable; 4096] = [PageTable::new(); 4096];
-static mut KERNEL_PT_HIGH: [PageTable; 4096] = [PageTable::new(); 4096];
+// 4GB = 2,048個のPT
+// 低位アドレスはアンマップ（ハイヤーハーフカーネル）
+static mut KERNEL_PT_HIGH: [PageTable; PT_COUNT] = [PageTable::new(); PT_COUNT];
 
 /// ページングシステムを初期化してCR3に設定
 /// 物理メモリの直接マッピング（Direct Mapping）を実装
-/// - 低位アドレス（0-8GB）: identity mapping（互換性のため残す）
-/// - 高位アドレス（0xFFFF_8000_0000_0000+）: カーネル用の直接マッピング（8GB分）
+/// - 低位アドレス（0x0〜）: アンマップ（ハイヤーハーフカーネル）
+/// - 高位アドレス（0xFFFF_8000_0000_0000+）: カーネル用の直接マッピング
 ///
-/// TODO: 現在は固定で8GBマッピングしているが、本来はUEFIから渡されたメモリマップ情報を基に、
-///       実際に利用可能なメモリ範囲のみを動的にマッピングすべき。
-///       参照: https://github.com/jugeeeemu-tech/VitrOS/issues/3
+/// UEFIメモリマップに基づいて、実際に利用可能なメモリ範囲のみをマッピングする。
+/// 最大サポートメモリは MAX_SUPPORTED_MEMORY_GB (4GB) まで。
+///
+/// # Arguments
+/// * `boot_info` - ブートローダから渡されたメモリ情報
 ///
 /// # Errors
 /// * `PagingError::AddressConversionFailed` - アドレス変換に失敗した場合
 /// * `PagingError::GuardPageSetupFailed` - Guard Page設定に失敗した場合
-pub fn init() -> Result<(), PagingError> {
+pub fn init(boot_info: &vitros_common::boot_info::BootInfo) -> Result<(), PagingError> {
+    // サポートする最大アドレスを計算
+    let max_supported = (MAX_SUPPORTED_MEMORY_GB as u64) << 30; // 4GB
+    let actual_max = boot_info.max_physical_address.min(max_supported);
+
+    // 必要なPD数とPT数を計算
+    // 1 PT = 512 * 4KB = 2MB
+    let required_pt_count = ((actual_max + (2 << 20) - 1) / (2 << 20)) as usize;
+    let required_pd_count = (required_pt_count + 511) / 512;
+
+    use crate::info;
+    info!(
+        "Paging: Mapping {} MB of physical memory",
+        actual_max / (1 << 20)
+    );
+    info!(
+        "Paging: Using {} PDs and {} PTs",
+        required_pd_count, required_pt_count
+    );
+
     unsafe {
-        // 生ポインタを取得
+        // 生ポインタを取得（高位アドレス用のみ）
         let pml4 = addr_of_mut!(KERNEL_PML4);
-        let pdp_low = addr_of_mut!(KERNEL_PDP_LOW);
         let pdp_high = addr_of_mut!(KERNEL_PDP_HIGH);
-        let pd_low = addr_of_mut!(KERNEL_PD_LOW);
         let pd_high = addr_of_mut!(KERNEL_PD_HIGH);
-        let pt_low = addr_of_mut!(KERNEL_PT_LOW);
         let pt_high = addr_of_mut!(KERNEL_PT_HIGH);
 
         // すべてのテーブルをクリア
         (*pml4).clear();
-        (*pdp_low).clear();
         (*pdp_high).clear();
-        for i in 0..8 {
-            (*pd_low)[i].clear();
+        for i in 0..MAX_SUPPORTED_MEMORY_GB {
             (*pd_high)[i].clear();
         }
-        for i in 0..4096 {
-            (*pt_low)[i].clear();
+        for i in 0..PT_COUNT {
             (*pt_high)[i].clear();
         }
 
         // 基本フラグ: Present + Writable
         let flags = PageTableFlags::Present as u64 | PageTableFlags::Writable as u64;
 
-        // === 高位アドレスのマッピング（Direct Mapping）===
-        // 0xFFFF_8000_0000_0000は、PML4インデックス256に対応
-        // PML4[256] -> PDP_HIGH
+        // === PML4の設定 ===
+        // 低位アドレス（0x0〜）はアンマップ（ハイヤーハーフカーネル）
+        // PML4[0]は設定しない（Present=0のまま）
+
+        // PML4[256] -> PDP_HIGH (高位アドレス用: 0xFFFF_8000_0000_0000〜)
         (*pml4)
             .entry(256)
             .set((*pdp_high).physical_address()?, flags);
 
-        // PDP_HIGH[0-7] -> PD_HIGH[0-7]（8GB分）
-        for i in 0..8 {
+        // === 必要なPDPエントリのみ設定（高位のみ）===
+        for i in 0..required_pd_count {
             (*pdp_high)
                 .entry(i)
                 .set((*pd_high)[i].physical_address()?, flags);
         }
 
-        // === 8GB全体を4KBページでマッピング ===
-        // 各PD（8個）が512個のPTを参照し、各PTが512個の4KBページをマップ
-        // 合計: 8 × 512 × 512 × 4KB = 8GB
+        // === 必要なPTのみリンク（高位のみ）===
+        for pt_idx in 0..required_pt_count {
+            let pd_idx = pt_idx / PAGE_TABLE_ENTRY_COUNT;
+            let entry_idx = pt_idx % PAGE_TABLE_ENTRY_COUNT;
 
-        // 各PDエントリにPTをリンク（高位アドレスのみ）
-        for pd_idx in 0..8 {
-            for entry_idx in 0..PAGE_TABLE_ENTRY_COUNT {
-                let pt_idx = pd_idx * PAGE_TABLE_ENTRY_COUNT + entry_idx;
-                (*pd_high)[pd_idx]
-                    .entry(entry_idx)
-                    .set((*pt_high)[pt_idx].physical_address()?, flags);
-            }
+            (*pd_high)[pd_idx]
+                .entry(entry_idx)
+                .set((*pt_high)[pt_idx].physical_address()?, flags);
         }
 
-        // 各PTのエントリに4KBページをマップ（高位アドレスのみ）
-        for pt_idx in 0..4096 {
+        // === 必要なページのみマッピング（高位のみ）===
+        for pt_idx in 0..required_pt_count {
             for page_idx in 0..PAGE_TABLE_ENTRY_COUNT {
-                // 物理アドレス = (PT番号 × 2MB) + (ページ番号 × 4KB)
                 let physical_addr =
                     ((pt_idx * PAGE_TABLE_ENTRY_COUNT + page_idx) * PAGE_SIZE) as u64;
-                (*pt_high)[pt_idx].entry(page_idx).set(physical_addr, flags);
+                if physical_addr < actual_max {
+                    (*pt_high)[pt_idx].entry(page_idx).set(physical_addr, flags);
+                }
             }
         }
 
@@ -359,15 +362,11 @@ pub fn init() -> Result<(), PagingError> {
             .checked_sub(PAGE_SIZE as u64)
             .ok_or(PagingError::GuardPageSetupFailed)?;
 
-        // 仮想アドレスを物理アドレスに変換（virt_to_phys()を使用）
+        // 仮想アドレスを物理アドレスに変換
         let guard_page_phys_addr = virt_to_phys(guard_page_virt_addr)?;
+        let physical_offset = guard_page_phys_addr;
 
-        // Guard PageのPTエントリを特定
-        // higher-half kernelの場合、カーネルベースからのオフセットを使ってインデックスを計算
-        // 仮想アドレス全体から計算すると高位ビットが影響するため、物理オフセットから計算
-        let physical_offset = virt_to_phys(guard_page_virt_addr)?;
-
-        // 4GB全体でのページ番号を計算
+        // ページ番号を計算
         let page_num = (physical_offset >> 12) as usize;
 
         // PT配列内のインデックスとPT内のエントリ番号を計算
@@ -375,7 +374,7 @@ pub fn init() -> Result<(), PagingError> {
         let page_idx_in_pt = page_num % PAGE_TABLE_ENTRY_COUNT;
 
         // インデックスの範囲検証
-        if pt_array_idx >= 4096 {
+        if pt_array_idx >= PT_COUNT {
             return Err(PagingError::GuardPageSetupFailed);
         }
         if page_idx_in_pt >= PAGE_TABLE_ENTRY_COUNT {
@@ -383,12 +382,12 @@ pub fn init() -> Result<(), PagingError> {
         }
 
         // Guard PageのPTエントリをPresent=0に設定（アクセス時にPage Faultが発生）
+        // 高位アドレスのみ設定（低位はアンマップ済み）
         (*pt_high)[pt_array_idx]
             .entry(page_idx_in_pt)
             .set(guard_page_phys_addr, 0);
 
         // デバッグ: Guard Page設定を確認
-        use crate::info;
         info!("Guard Page setup:");
         info!("  Virtual address: 0x{:016X}", guard_page_virt_addr);
         info!("  Physical offset: 0x{:X}", physical_offset);

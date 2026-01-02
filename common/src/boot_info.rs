@@ -28,6 +28,8 @@ pub struct BootInfo {
     pub memory_map: [MemoryRegion; MAX_MEMORY_REGIONS],
     pub memory_map_count: usize,
     pub rsdp_address: u64,
+    /// マッピングが必要な最大物理アドレス（UEFIメモリマップから計算）
+    pub max_physical_address: u64,
 }
 
 impl BootInfo {
@@ -47,6 +49,7 @@ impl BootInfo {
             }; MAX_MEMORY_REGIONS],
             memory_map_count: 0,
             rsdp_address: 0,
+            max_physical_address: 0,
         }
     }
 }
