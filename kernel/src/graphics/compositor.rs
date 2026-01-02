@@ -68,16 +68,22 @@ impl Compositor {
     /// try_lock()を使用して、ロック中のバッファはスキップします。
     /// シャドウバッファに描画後、ハードウェアフレームバッファに一括転送します。
     pub fn compose_frame(&mut self) {
-        // 各Writerのコマンドをシャドウバッファにレンダリング
+        // まず全バッファからコマンドを収集（借用の分離）
+        let mut collected: Vec<(Region, Vec<DrawCommand>)> = Vec::new();
         for buffer in &self.buffers {
             // try_lockを使用して、ロック中のバッファはスキップ
             if let Some(mut buf) = buffer.try_lock() {
                 if buf.is_dirty() {
                     let region = buf.region();
                     let commands = buf.take_commands();
-                    self.render_commands(&region, &commands);
+                    collected.push((region, commands));
                 }
             }
+        }
+
+        // 収集したコマンドをシャドウバッファにレンダリング
+        for (region, commands) in &collected {
+            self.render_commands(region, commands);
         }
 
         // シャドウバッファをハードウェアフレームバッファに転送
@@ -91,7 +97,7 @@ impl Compositor {
     /// # Arguments
     /// * `region` - 描画領域
     /// * `commands` - 描画コマンドのスライス
-    fn render_commands(&self, region: &Region, commands: &[DrawCommand]) {
+    fn render_commands(&mut self, region: &Region, commands: &[DrawCommand]) {
         let shadow_base = self.shadow_buffer.base_addr();
         let shadow_width = self.shadow_buffer.width();
 
@@ -110,6 +116,7 @@ impl Compositor {
                             *color,
                         );
                     }
+                    self.shadow_buffer.mark_dirty(region);
                 }
                 DrawCommand::DrawChar { x, y, ch, color } => {
                     // ローカル座標をグローバル座標に変換
@@ -125,6 +132,9 @@ impl Compositor {
                             *color,
                         );
                     }
+                    // 8x8文字のdirty rect
+                    self.shadow_buffer
+                        .mark_dirty(&Region::new(global_x, global_y, 8, 8));
                 }
                 DrawCommand::DrawString { x, y, text, color } => {
                     let global_x = region.x + x;
@@ -139,6 +149,10 @@ impl Compositor {
                             *color,
                         );
                     }
+                    // 文字列全体のdirty rect（幅 = 文字数 * 8）
+                    let text_width = (text.len() as u32) * 8;
+                    self.shadow_buffer
+                        .mark_dirty(&Region::new(global_x, global_y, text_width, 8));
                 }
                 DrawCommand::FillRect {
                     x,
@@ -160,6 +174,8 @@ impl Compositor {
                             *color,
                         );
                     }
+                    self.shadow_buffer
+                        .mark_dirty(&Region::new(global_x, global_y, *width, *height));
                 }
             }
         }
