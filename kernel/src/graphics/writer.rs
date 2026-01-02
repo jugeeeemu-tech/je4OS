@@ -86,10 +86,9 @@ impl TaskWriter {
             return;
         }
 
-        let mut buf = self.buffer.lock();
-        for cmd in self.local_commands.drain(..) {
-            buf.push_command(cmd);
-        }
+        // 一括転送: ロック保持時間を最小化
+        let commands = core::mem::take(&mut self.local_commands);
+        self.buffer.lock().extend_commands(commands);
     }
 
     /// 改行処理

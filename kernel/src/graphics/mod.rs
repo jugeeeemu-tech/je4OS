@@ -17,30 +17,58 @@ pub use writer::TaskWriter;
 // 描画範囲が画面内に収まっていることを呼び出し側が保証する必要があります。
 pub unsafe fn draw_char(fb_base: u64, width: u32, x: usize, y: usize, ch: u8, color: u32) {
     let fb_ptr = fb_base as *mut u32;
+    let stride = width as usize;
 
     if ch < 32 || ch > 126 {
         return; // サポート外の文字
     }
 
+    // 事前に境界チェック: 文字全体（8x8）が画面内に収まるか確認
+    // 文字の右端 (x + 7) と下端 (y + 7) が画面内であればOK
+    let x_end = match x.checked_add(8) {
+        Some(end) => end,
+        None => return, // オーバーフロー
+    };
+    let y_end = match y.checked_add(8) {
+        Some(end) => end,
+        None => return, // オーバーフロー
+    };
+
+    // 文字が完全に画面外の場合は早期リターン
+    if x >= stride || y_end == 0 {
+        return;
+    }
+
     let font_index = (ch - 32) as usize;
     let glyph = FONT_8X8[font_index];
 
-    for row in 0..8 {
-        for col in 0..8 {
-            if (glyph[row] >> col) & 1 == 1 {
-                // オーバーフローと境界チェック
-                if let (Some(pixel_x), Some(pixel_y)) = (x.checked_add(col), y.checked_add(row))
-                    && pixel_x < width as usize
-                {
-                    let pixel_offset = pixel_y
-                        .checked_mul(width as usize)
-                        .and_then(|y_offset| y_offset.checked_add(pixel_x));
-
-                    if let Some(offset) = pixel_offset {
-                        unsafe {
-                            *fb_ptr.add(offset) = color;
-                        }
-                    }
+    // 文字が完全に画面内に収まる場合は高速パス
+    if x_end <= stride {
+        // 高速パス: 境界チェック不要
+        for row in 0..8 {
+            let glyph_row = glyph[row];
+            if glyph_row == 0 {
+                continue; // この行には描画するピクセルがない
+            }
+            let row_offset = (y + row) * stride + x;
+            for col in 0..8 {
+                if (glyph_row >> col) & 1 == 1 {
+                    *fb_ptr.add(row_offset + col) = color;
+                }
+            }
+        }
+    } else {
+        // 低速パス: 右端がクリップされる場合
+        let visible_cols = stride.saturating_sub(x).min(8);
+        for row in 0..8 {
+            let glyph_row = glyph[row];
+            if glyph_row == 0 {
+                continue;
+            }
+            let row_offset = (y + row) * stride + x;
+            for col in 0..visible_cols {
+                if (glyph_row >> col) & 1 == 1 {
+                    *fb_ptr.add(row_offset + col) = color;
                 }
             }
         }
@@ -268,10 +296,12 @@ impl FramebufferWriter {
     pub fn clear_screen(&mut self, color: u32) {
         let fb = self.fb_base as *mut u32;
         let total_pixels = (self.width as usize) * (self.height as usize);
-        for i in 0..total_pixels {
-            unsafe {
-                *fb.add(i) = color;
-            }
+        // slice::fill()を使用して高速に塗りつぶし
+        // SAFETY: fb_baseは有効なフレームバッファアドレスであり、
+        // total_pixelsはwidth * heightで計算された有効な範囲
+        unsafe {
+            let slice = core::slice::from_raw_parts_mut(fb, total_pixels);
+            slice.fill(color);
         }
         // カーソルを左上に戻す
         self.x = 0;

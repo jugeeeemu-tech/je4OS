@@ -65,6 +65,18 @@ impl WriterBuffer {
         self.dirty = true;
     }
 
+    /// 複数のコマンドを一括で追加
+    ///
+    /// # Arguments
+    /// * `commands` - 追加する描画コマンドのVec
+    pub fn extend_commands(&mut self, commands: Vec<DrawCommand>) {
+        if commands.is_empty() {
+            return;
+        }
+        self.commands.extend(commands);
+        self.dirty = true;
+    }
+
     /// ダーティフラグをクリアしてコマンドを取得
     ///
     /// # Returns
