@@ -56,6 +56,8 @@ impl TaskWriter {
     pub fn clear(&mut self, bg_color: u32) {
         let mut buf = self.buffer.lock();
         buf.push_command(DrawCommand::Clear { color: bg_color });
+        self.cursor_x = 0;
+        self.cursor_y = 0;
     }
 
     /// 改行処理

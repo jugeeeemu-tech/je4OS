@@ -250,6 +250,23 @@ impl FramebufferWriter {
         self.x = 0;
         self.y += 10; // 1行分（8ピクセル + マージン2ピクセル）
     }
+
+    /// 画面全体をクリア（指定色で塗りつぶし）
+    ///
+    /// # Arguments
+    /// * `color` - 塗りつぶし色（0xRRGGBB形式）
+    pub fn clear_screen(&mut self, color: u32) {
+        let fb = self.fb_base as *mut u32;
+        let total_pixels = (self.width as usize) * (self.height as usize);
+        for i in 0..total_pixels {
+            unsafe {
+                *fb.add(i) = color;
+            }
+        }
+        // カーソルを左上に戻す
+        self.x = 0;
+        self.y = 0;
+    }
 }
 
 impl core::fmt::Write for FramebufferWriter {

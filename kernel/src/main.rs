@@ -30,8 +30,6 @@ use alloc::boxed::Box;
 use core::arch::asm;
 use core::fmt::Write;
 use core::panic::PanicInfo;
-use lazy_static::lazy_static;
-use spin::Mutex;
 use vitros_common::boot_info::BootInfo;
 use vitros_common::uefi;
 
@@ -40,33 +38,6 @@ use crate::allocator_visualization;
 
 // カーネル仮想アドレスベース（ブートローダと同じ値）
 const KERNEL_VMA: u64 = 0xFFFF800000000000;
-
-// グローバルフレームバッファライター
-lazy_static! {
-    static ref GLOBAL_FRAMEBUFFER: Mutex<Option<FramebufferWriter>> = Mutex::new(None);
-}
-
-/// グローバルフレームバッファを初期化
-fn init_global_framebuffer(fb_base: u64, width: u32, height: u32, color: u32) {
-    let mut fb = GLOBAL_FRAMEBUFFER.lock();
-    *fb = Some(FramebufferWriter::new(fb_base, width, height, color));
-}
-
-/// グローバルフレームバッファに文字列を書き込む
-fn fb_write(s: &str) {
-    let mut fb = GLOBAL_FRAMEBUFFER.lock();
-    if let Some(writer) = fb.as_mut() {
-        let _ = write!(writer, "{}", s);
-    }
-}
-
-/// グローバルフレームバッファに1行書き込む
-fn fb_writeln(s: &str) {
-    let mut fb = GLOBAL_FRAMEBUFFER.lock();
-    if let Some(writer) = fb.as_mut() {
-        let _ = writeln!(writer, "{}", s);
-    }
-}
 
 // パニックハンドラ
 #[panic_handler]
@@ -102,7 +73,6 @@ pub extern "C" fn boot_complete() {
 /// アイドルタスク：CPUを休止状態にし続ける
 extern "C" fn idle_task() -> ! {
     info!("[Idle] Idle task started");
-    fb_writeln("[Idle] Started");
     loop {
         unsafe {
             asm!("hlt");
@@ -241,16 +211,19 @@ extern "C" fn kernel_main_inner(boot_info_phys_addr: u64) -> ! {
     info!("Calibrating APIC Timer...");
     apic::calibrate_timer().expect("Failed to calibrate APIC Timer");
 
-    // グローバルフレームバッファを初期化（表示はヒープ初期化後）
+    // ローカルフレームバッファを初期化
     // 物理アドレスを高位仮想アドレスに変換
     let fb_virt_base = paging::phys_to_virt(boot_info.framebuffer.base)
         .expect("Failed to convert framebuffer address");
-    init_global_framebuffer(
+    let mut fb_writer = FramebufferWriter::new(
         fb_virt_base,
         boot_info.framebuffer.width,
         boot_info.framebuffer.height,
         0xFFFFFFFF,
     );
+
+    // カーネル起動時に画面を黒でクリア
+    fb_writer.clear_screen(0x00000000);
 
     info!("Memory map count: {}", boot_info.memory_map_count);
     info!("Memory map array len: {}", boot_info.memory_map.len());
@@ -299,21 +272,7 @@ extern "C" fn kernel_main_inner(boot_info_phys_addr: u64) -> ! {
         #[cfg(feature = "visualize-allocator")]
         {
             info!("Starting allocator visualization");
-            // 可視化テストのために一時的にローカルライターを作成
-            let mut local_writer = {
-                let mut fb = GLOBAL_FRAMEBUFFER.lock();
-                if let Some(writer) = fb.take() {
-                    writer
-                } else {
-                    panic!("Global framebuffer not initialized!");
-                }
-            };
-            allocator_visualization::run_visualization_tests(&mut local_writer);
-            // 使用後にグローバルに戻す
-            {
-                let mut fb = GLOBAL_FRAMEBUFFER.lock();
-                *fb = Some(local_writer);
-            }
+            allocator_visualization::run_visualization_tests(&mut fb_writer);
         }
 
         info!("Heap initialized successfully");
@@ -406,33 +365,34 @@ extern "C" fn kernel_main_inner(boot_info_phys_addr: u64) -> ! {
 
         info!("Returned from scheduler! KernelMain task rescheduled, entering idle loop...");
 
-        // ヒープ初期化後、フレームバッファに情報を表示
-        // ブートローダーの出力の後に配置（時系列順）
-        {
-            let mut fb = GLOBAL_FRAMEBUFFER.lock();
-            if let Some(writer) = fb.as_mut() {
-                writer.set_position(10, 350);
-            }
-        }
+        // TaskWriterで情報を表示（Compositor経由）
+        let region = graphics::Region::new(10, 350, 700, 80);
+        let buffer =
+            graphics::compositor::register_writer(region).expect("Failed to register writer");
+        let mut writer = graphics::TaskWriter::new(buffer, 0xFFFFFFFF);
 
-        fb_writeln(&alloc::format!(
+        let _ = writeln!(
+            writer,
             "Framebuffer: 0x{:X}, {}x{}",
-            boot_info.framebuffer.base,
-            boot_info.framebuffer.width,
-            boot_info.framebuffer.height
-        ));
-        fb_writeln(&alloc::format!(
-            "Memory regions: {}",
-            boot_info.memory_map_count
-        ));
-        fb_writeln(&alloc::format!(
+            boot_info.framebuffer.base, boot_info.framebuffer.width, boot_info.framebuffer.height
+        );
+        let _ = writeln!(writer, "Memory regions: {}", boot_info.memory_map_count);
+        let _ = writeln!(
+            writer,
             "Largest usable memory: phys=0x{:X} virt=0x{:X} - 0x{:X} ({} MB)",
             largest_start_phys,
             largest_start_virt,
             largest_start_virt + largest_size as u64,
             largest_size / 1024 / 1024
-        ));
-        fb_writeln(&alloc::format!("Heap initialized: {} KB", heap_size / 1024));
+        );
+        let _ = writeln!(writer, "Heap initialized: {} KB", heap_size / 1024);
+
+        #[cfg(not(feature = "visualize-allocator"))]
+        {
+            let _ = writeln!(writer, "");
+            let _ = writeln!(writer, "Kernel running...");
+            let _ = writeln!(writer, "System ready.");
+        }
 
         // ヒープが初期化されたので、タイマーを登録できる
         info!("Registering test timers...");
@@ -442,7 +402,6 @@ extern "C" fn kernel_main_inner(boot_info_phys_addr: u64) -> ! {
             timer::seconds_to_ticks(1),
             Box::new(|| {
                 info!("Timer 1: 1 second elapsed!");
-                fb_writeln("Timer 1: 1 second elapsed!");
             }),
         );
 
@@ -451,7 +410,6 @@ extern "C" fn kernel_main_inner(boot_info_phys_addr: u64) -> ! {
             timer::seconds_to_ticks(2),
             Box::new(|| {
                 info!("Timer 2: 2 seconds elapsed!");
-                fb_writeln("Timer 2: 2 seconds elapsed!");
             }),
         );
 
@@ -460,21 +418,12 @@ extern "C" fn kernel_main_inner(boot_info_phys_addr: u64) -> ! {
             timer::seconds_to_ticks(3),
             Box::new(|| {
                 info!("Timer 3: 3 seconds elapsed!");
-                fb_writeln("Timer 3: 3 seconds elapsed!");
             }),
         );
 
         info!("Test timers registered");
     } else {
         error!("No usable memory found!");
-        fb_writeln("ERROR: No usable memory!");
-    }
-
-    #[cfg(not(feature = "visualize-allocator"))]
-    {
-        fb_writeln("");
-        fb_writeln("Kernel running...");
-        fb_writeln("System ready.");
     }
 
     info!("Entering main loop");
