@@ -275,6 +275,6 @@ pub extern "C" fn compositor_task() -> ! {
         }
 
         // 次のリフレッシュまで待機（約60fps = 16ms間隔）
-        crate::task::sleep_ms(16);
+        crate::sched::sleep_ms(16);
     }
 }

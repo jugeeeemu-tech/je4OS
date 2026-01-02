@@ -17,6 +17,9 @@ where
     F: FnOnce() -> R,
 {
     let rflags: u64;
+    // SAFETY: PUSHFQ/POP命令でRFLAGSレジスタを読み取り、CLI命令で割り込みを無効化する。
+    // これらはRing 0で実行される特権命令であり、カーネルモードで動作している。
+    // RFLAGSの読み取りとCLI命令はメモリアクセスを伴わない。
     unsafe {
         // RFLAGSを保存して割り込みを無効化
         asm!("pushfq; pop {}; cli", out(reg) rflags, options(nomem, nostack));
@@ -26,6 +29,9 @@ where
 
     // 元々割り込みが有効だった場合のみ復元
     if rflags & 0x200 != 0 {
+        // SAFETY: STI命令はRing 0で実行される特権命令。
+        // 元々割り込みが有効だった場合にのみ呼ばれ、
+        // IDT/APICは初期化済みなので割り込みを受け付けられる。
         unsafe {
             asm!("sti", options(nomem, nostack));
         }

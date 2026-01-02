@@ -54,23 +54,42 @@ mod registers {
 }
 
 /// Local APICレジスタへの書き込み
+///
+/// # Safety
+/// - APIC_BASEが有効なLocal APICメモリマップドレジスタのベースアドレスであること
+/// - offsetが有効なAPICレジスタオフセットであること
+/// - APICが有効化されていること（enable_apic()呼び出し後）
 unsafe fn write_apic_register(offset: u32, value: u32) {
     let addr = (APIC_BASE + offset as u64) as *mut u32;
+    // SAFETY: 呼び出し元が上記の安全性要件を満たすことを保証する。
+    // APICレジスタはメモリマップドI/Oであり、write_volatileで書き込む必要がある。
     unsafe {
         write_volatile(addr, value);
     }
 }
 
 /// Local APICレジスタからの読み込み
+///
+/// # Safety
+/// - APIC_BASEが有効なLocal APICメモリマップドレジスタのベースアドレスであること
+/// - offsetが有効なAPICレジスタオフセットであること
 unsafe fn read_apic_register(offset: u32) -> u32 {
     let addr = (APIC_BASE + offset as u64) as *const u32;
+    // SAFETY: 呼び出し元が上記の安全性要件を満たすことを保証する。
+    // APICレジスタはメモリマップドI/Oであり、read_volatileで読み込む必要がある。
     unsafe { read_volatile(addr) }
 }
 
 /// MSR (Model Specific Register) の読み込み
+///
+/// # Safety
+/// - msrが有効なMSRアドレスであること
+/// - Ring 0で実行されること
 unsafe fn read_msr(msr: u32) -> u64 {
     let low: u32;
     let high: u32;
+    // SAFETY: 呼び出し元が有効なMSRアドレスを指定することを保証する。
+    // RDMSR命令はRing 0でのみ実行可能であり、カーネルモードで動作している。
     unsafe {
         asm!(
             "rdmsr",
@@ -84,9 +103,16 @@ unsafe fn read_msr(msr: u32) -> u64 {
 }
 
 /// MSR (Model Specific Register) への書き込み
+///
+/// # Safety
+/// - msrが有効な書き込み可能MSRアドレスであること
+/// - valueがそのMSRに対して有効な値であること
+/// - Ring 0で実行されること
 unsafe fn write_msr(msr: u32, value: u64) {
     let low = (value & 0xFFFFFFFF) as u32;
     let high = ((value >> 32) & 0xFFFFFFFF) as u32;
+    // SAFETY: 呼び出し元が有効なMSRアドレスと値を指定することを保証する。
+    // WRMSR命令はRing 0でのみ実行可能であり、カーネルモードで動作している。
     unsafe {
         asm!(
             "wrmsr",
@@ -100,6 +126,10 @@ unsafe fn write_msr(msr: u32, value: u64) {
 
 /// Local APICを有効化
 pub fn enable_apic() {
+    // SAFETY: IA32_APIC_BASE MSR (0x1B) はx86_64アーキテクチャで定義された
+    // 標準的なMSRであり、APICの有効化に使用される。
+    // Spurious Interrupt Vector Registerへの書き込みも、APICが
+    // メモリマップされた標準アドレス(0xFEE00000)に存在する前提で安全。
     unsafe {
         // IA32_APIC_BASE MSR (0x1B) を読み込み
         const IA32_APIC_BASE_MSR: u32 = 0x1B;
@@ -133,6 +163,9 @@ static APIC_TIMER_FREQUENCY: AtomicU32 = AtomicU32::new(0);
 /// # Errors
 /// * `ApicError::CalibrationFailed` - キャリブレーションに失敗した場合（周波数が0など）
 pub fn calibrate_timer() -> Result<(), ApicError> {
+    // SAFETY: APICレジスタへのアクセスは、enable_apic()でAPICが有効化された後に
+    // 行われる。PITによる10ms待機は割り込み無効状態で実行されることが前提。
+    // すべてのレジスタオフセットはIntel SDMで定義された有効な値。
     unsafe {
         // Timer Divide Configuration Register を設定
         // 0x3 = Divide by 16
@@ -192,6 +225,9 @@ pub fn init_timer(frequency_hz: u32) -> Result<(), ApicError> {
         return Err(ApicError::InvalidFrequency);
     }
 
+    // SAFETY: APICレジスタへのアクセスは、enable_apic()でAPICが有効化され、
+    // calibrate_timer()でキャリブレーションが完了した後に行われる。
+    // すべてのレジスタオフセットはIntel SDMで定義された有効な値。
     unsafe {
         // キャリブレーション結果を取得
         let apic_freq = APIC_TIMER_FREQUENCY.load(Ordering::SeqCst);
@@ -230,6 +266,8 @@ pub fn init_timer(frequency_hz: u32) -> Result<(), ApicError> {
 /// End of Interrupt (EOI) を送信
 /// 割り込みハンドラの最後に呼び出す必要があります
 pub fn send_eoi() {
+    // SAFETY: EOIレジスタへの書き込みは、APICが有効化されていれば常に安全。
+    // この関数は割り込みハンドラから呼ばれ、APICは初期化時に有効化済み。
     unsafe {
         write_apic_register(registers::EOI, 0);
     }
@@ -238,6 +276,9 @@ pub fn send_eoi() {
 /// レガシーPIC（8259 PIC）を無効化
 /// APICを使う場合、古いPICとの競合を避けるために無効化が必要
 fn disable_legacy_pic() {
+    // SAFETY: I/Oポート0x21と0xA1は8259 PICのIMRポートとして定義されている。
+    // 0xFFを書き込むことで全ての割り込みをマスクする標準的な操作。
+    // Ring 0で実行されることが前提。
     unsafe {
         // マスターPICとスレーブPICの両方のIMR（Interrupt Mask Register）に
         // 0xFFを書き込んで、すべての割り込みをマスク

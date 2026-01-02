@@ -26,8 +26,11 @@ impl core::fmt::Display for GdtError {
 }
 
 /// 現在高位アドレス空間で実行されているかチェック
+#[allow(dead_code)]
 fn is_higher_half() -> bool {
     let rip: u64;
+    // SAFETY: LEA命令でRIPレジスタの値を取得する。
+    // この操作はメモリアクセスを伴わず、現在の命令ポインタを読むだけなので安全。
     unsafe {
         asm!("lea {}, [rip]", out(reg) rip, options(nomem, nostack));
     }
@@ -264,6 +267,15 @@ pub const DOUBLE_FAULT_IST_INDEX: u8 = 1;
 
 /// GDTを初期化してロード
 pub fn init() -> Result<(), GdtError> {
+    // SAFETY: この関数は以下の操作を行う：
+    // 1. 静的変数TSS, GDTへのアクセス - シングルスレッド初期化時に呼ばれ、
+    //    割り込み無効状態で実行されるため競合しない
+    // 2. LGDT命令 - 有効なGDT構造体へのポインタを渡す
+    // 3. far return によるコードセグメントリロード - 有効なセレクタを使用
+    // 4. セグメントレジスタへの代入 - 有効なセレクタを使用
+    // 5. LTR命令 - 有効なTSSセレクタを使用
+    // すべての操作はカーネル初期化時のRing 0で実行され、
+    // 必要な構造体は静的に確保されたメモリに存在する。
     unsafe {
         // TSSを初期化（Double Fault用のISTスタックを設定）
         let double_fault_stack_top = (&raw const DOUBLE_FAULT_STACK as u64)

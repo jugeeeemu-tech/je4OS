@@ -5,7 +5,8 @@
 //! 割り込みを無効化します。これにより、ロック保持中にプリエンプションが
 //! 発生して別タスクが同じロックを取得しようとする問題を防ぎます。
 
-use crate::task::TaskId;
+use crate::io::without_interrupts;
+use crate::sched::TaskId;
 use alloc::collections::VecDeque;
 use spin::Mutex as SpinMutex;
 
@@ -13,29 +14,6 @@ use spin::Mutex as SpinMutex;
 pub struct WaitQueue {
     /// 待機中のタスクIDリスト
     waiters: SpinMutex<VecDeque<TaskId>>,
-}
-
-/// 割り込みを無効化してクロージャを実行
-///
-/// クロージャ実行後、元の割り込み状態を復元します。
-fn without_interrupts<F, R>(f: F) -> R
-where
-    F: FnOnce() -> R,
-{
-    let rflags: u64;
-    unsafe {
-        core::arch::asm!("pushfq; pop {}; cli", out(reg) rflags, options(nomem, nostack));
-    }
-
-    let result = f();
-
-    if rflags & 0x200 != 0 {
-        unsafe {
-            core::arch::asm!("sti", options(nomem, nostack));
-        }
-    }
-
-    result
 }
 
 impl WaitQueue {
@@ -54,7 +32,7 @@ impl WaitQueue {
     /// スピンロック保持中は割り込みを無効化し、シングルCPU環境での
     /// デッドロックを防止します。
     pub fn wait(&self) {
-        let task_id = crate::task::current_task_id();
+        let task_id = crate::sched::current_task_id();
 
         // スピンロック保持中は割り込みを無効化
         // これにより、ロック保持中のプリエンプションを防ぐ
@@ -65,7 +43,7 @@ impl WaitQueue {
 
         // waitersロック解放後にブロック
         // block_current_task()は内部で適切にロックを管理する
-        crate::task::block_current_task();
+        crate::sched::block_current_task();
     }
 
     /// 1つのタスクを起床させる
@@ -85,7 +63,7 @@ impl WaitQueue {
 
         if let Some(id) = task_id {
             // ロック解放後にunblock_task()を呼び出す
-            crate::task::unblock_task(id);
+            crate::sched::unblock_task(id);
             true
         } else {
             false
@@ -106,7 +84,7 @@ impl WaitQueue {
 
             if let Some(id) = task_id {
                 // ロック解放後にunblock_task()を呼び出す
-                crate::task::unblock_task(id);
+                crate::sched::unblock_task(id);
             } else {
                 break;
             }

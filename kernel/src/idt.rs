@@ -189,7 +189,7 @@ extern "C" fn timer_interrupt_handler() {
 /// need_reschedフラグがセットされている場合、スケジューラを呼び出します。
 /// RFLAGSの保存・復元はswitch_context()内部で自動的に処理されます。
 extern "C" fn check_resched_on_interrupt_exit_wrapper() {
-    crate::task::check_resched_on_interrupt_exit();
+    crate::sched::check_resched_on_interrupt_exit();
 }
 
 /// タイマー割り込みハンドラの実装
@@ -203,11 +203,11 @@ extern "C" fn timer_handler_inner() {
     // 現在のタスクのvruntimeを更新（CFS風スケジューリング）
     // タイマー周波数は250Hzなので、1tick = 4ms = 4,000,000ns
     const TIMER_PERIOD_NS: u64 = 4_000_000;
-    crate::task::update_current_task_vruntime(TIMER_PERIOD_NS);
+    crate::sched::update_current_task_vruntime(TIMER_PERIOD_NS);
 
     // スケジューリングが必要であることを示すフラグをセット
     // 実際のスケジューリングは割り込み復帰時に行われる（Linux風）
-    crate::task::set_need_resched();
+    crate::sched::set_need_resched();
 
     // EOI (End of Interrupt) を送信
     apic::send_eoi();

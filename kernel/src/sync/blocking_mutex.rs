@@ -56,7 +56,7 @@ impl<T> BlockingMutex<T> {
             }
 
             // 取得失敗時、割り込みコンテキストでないことを確認
-            if crate::task::is_interrupt_context() {
+            if crate::sched::is_interrupt_context() {
                 // 割り込み中はスピンにフォールバック
                 while self.locked.load(Ordering::Relaxed) {
                     core::hint::spin_loop();

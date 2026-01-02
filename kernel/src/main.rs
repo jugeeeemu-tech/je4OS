@@ -17,10 +17,13 @@ mod io;
 mod paging;
 mod pci;
 mod pit;
+mod sched;
 mod serial;
 mod sync;
-mod task;
 mod timer;
+
+// 後方互換性のためのエイリアス
+use sched as task;
 
 #[cfg(feature = "visualize-allocator")]
 mod allocator_visualization;
@@ -50,6 +53,9 @@ fn panic(info: &PanicInfo) -> ! {
 }
 
 fn hlt() {
+    // SAFETY: hlt命令はCPUを低消費電力状態にする特権命令。
+    // 次の割り込みで復帰するため、メモリ安全性に影響しない。
+    // カーネルモード（Ring 0）で実行されることが前提。
     unsafe {
         asm!("hlt");
     }
@@ -60,7 +66,9 @@ fn hlt() {
 #[unsafe(no_mangle)]
 #[inline(never)]
 pub extern "C" fn boot_complete() {
-    // 最適化で消されないようにvolatile read
+    // SAFETY: スタック上の一時変数からvolatile readを行う。
+    // この操作は最適化防止のためのダミー読み込みであり、
+    // 有効なメモリ領域へのアクセスなので安全。
     unsafe {
         core::ptr::read_volatile(&0u8);
     }
@@ -74,6 +82,8 @@ pub extern "C" fn boot_complete() {
 extern "C" fn idle_task() -> ! {
     info!("[Idle] Idle task started");
     loop {
+        // SAFETY: hlt命令はCPUを低消費電力状態にする特権命令。
+        // 次の割り込みで復帰するため、メモリ安全性に影響しない。
         unsafe {
             asm!("hlt");
         }
@@ -176,6 +186,11 @@ extern "C" fn kernel_main_inner(boot_info_phys_addr: u64) -> ! {
     // 物理アドレスを高位仮想アドレスに変換してboot_infoにアクセス
     // 低位物理アドレスは高位にマッピングされているため、コピー不要
     let boot_info_virt_addr = KERNEL_VMA + boot_info_phys_addr;
+    // SAFETY: boot_info_phys_addrはブートローダーから渡された有効なBootInfo構造体の
+    // 物理アドレス。KERNEL_VMAを加算することで高位仮想アドレスに変換し、
+    // ブートローダーが設定したページテーブルによりアクセス可能な領域を参照する。
+    // BootInfoはブートローダーによって正しく初期化されており、
+    // カーネル実行中は不変であることが保証されている。
     let boot_info = unsafe { &*(boot_info_virt_addr as *const BootInfo) };
 
     // GDTを初期化
@@ -272,6 +287,11 @@ extern "C" fn kernel_main_inner(boot_info_phys_addr: u64) -> ! {
             largest_start_phys, largest_start_virt
         );
 
+        // SAFETY: largest_start_virtはphys_to_virtで変換された有効な仮想アドレス。
+        // heap_sizeはEFI_CONVENTIONAL_MEMORYリージョンのサイズ以下に制限されている。
+        // この領域はUEFIメモリマップで使用可能と報告されており、
+        // カーネルの他の部分では使用されていない。
+        // init_heapは一度だけ呼び出され、以降はグローバルアロケータとして機能する。
         unsafe {
             allocator::init_heap(largest_start_virt as usize, heap_size);
         }
@@ -367,6 +387,9 @@ extern "C" fn kernel_main_inner(boot_info_phys_addr: u64) -> ! {
 
         // kernel_main_innerタスクが再スケジュールされた時、ここに戻ってくる
         // 割り込みを有効化（schedule()から戻ってきた時点では割り込み無効）
+        // SAFETY: sti命令は割り込みフラグ(IF)をセットする特権命令。
+        // この時点でIDT、APIC、タイマーは全て初期化済みであり、
+        // 割り込みを安全に受け付けられる状態にある。
         unsafe {
             asm!("sti");
         }
