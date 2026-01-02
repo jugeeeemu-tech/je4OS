@@ -3,5 +3,8 @@ name = "vitros-bootloader"
 version.workspace = true
 edition.workspace = true
 
+[features]
+visualize-allocator = []
+
 [dependencies]
 vitros-common = { path = "../common" }

@@ -53,3 +53,9 @@ impl BootInfo {
         }
     }
 }
+
+impl Default for BootInfo {
+    fn default() -> Self {
+        Self::new()
+    }
+}

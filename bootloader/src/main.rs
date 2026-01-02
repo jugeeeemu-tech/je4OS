@@ -2,6 +2,7 @@
 #![no_main]
 
 use core::fmt::Write;
+#[cfg(not(test))]
 use core::panic::PanicInfo;
 use vitros_common::boot_info::{BootInfo, FramebufferInfo, MemoryRegion};
 use vitros_common::elf::{Elf64Header, Elf64ProgramHeader, PT_LOAD};
@@ -70,15 +71,6 @@ impl Write for BufWriter {
 }
 
 // マクロライクなヘルパー
-macro_rules! print_uefi {
-    ($($arg:tt)*) => {{
-        use core::fmt::Write;
-        let mut buf = BufWriter::new();
-        let _ = write!(buf, $($arg)*);
-        print_con(buf.as_str());
-    }};
-}
-
 macro_rules! println_uefi {
     ($($arg:tt)*) => {{
         use core::fmt::Write;
@@ -88,6 +80,7 @@ macro_rules! println_uefi {
     }};
 }
 
+#[cfg(not(test))]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     println_con("\n!!! BOOTLOADER PANIC !!!");
@@ -656,13 +649,11 @@ fn load_kernel_elf(_image_handle: EfiHandle, boot_services: *mut EfiBootServices
 
     // エントリポイントを物理アドレスに変換
     // カーネルが高位アドレスでリンクされている場合、仮想アドレスを物理アドレスに変換
-    let physical_entry = if let Some(offset) = kernel_virt_offset {
+    if let Some(offset) = kernel_virt_offset {
         elf_header.e_entry - offset
     } else {
         elf_header.e_entry
-    };
-
-    physical_entry
+    }
 }
 
 /// 文字列をUTF-16に変換
