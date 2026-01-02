@@ -107,6 +107,8 @@ extern "C" fn task1() -> ! {
         // tick数を表示してタイマー割り込みが発生しているか確認
         let tick = timer::current_tick();
         let _ = write!(writer, "[Task1] Count:{} Tick:{}", counter, tick);
+        // ローカルバッファを共有バッファに一括転送（1回のロックのみ）
+        writer.flush();
         counter += 1;
         // 描画頻度を制限（16ms = 約60fps）
         task::sleep_ms(16);
@@ -126,6 +128,8 @@ extern "C" fn task2() -> ! {
     loop {
         writer.clear(0x00000000);
         let _ = write!(writer, "[Task2 Med ] Count: {}", counter);
+        // ローカルバッファを共有バッファに一括転送（1回のロックのみ）
+        writer.flush();
         counter += 1;
         // 描画頻度を制限（16ms = 約60fps）
         task::sleep_ms(16);
@@ -145,6 +149,8 @@ extern "C" fn task3() -> ! {
     loop {
         writer.clear(0x00000000);
         let _ = write!(writer, "[Task3 Low ] Count: {}", counter);
+        // ローカルバッファを共有バッファに一括転送（1回のロックのみ）
+        writer.flush();
         counter += 1;
         // 描画頻度を制限（16ms = 約60fps）
         task::sleep_ms(16);
@@ -436,6 +442,8 @@ extern "C" fn kernel_main_inner(boot_info_phys_addr: u64) -> ! {
             let _ = writeln!(writer, "Kernel running...");
             let _ = writeln!(writer, "System ready.");
         }
+        // ローカルバッファを共有バッファに一括転送
+        writer.flush();
 
         // ヒープが初期化されたので、タイマーを登録できる
         info!("Registering test timers...");

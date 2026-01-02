@@ -1,14 +1,24 @@
 //! Per-task Writer
 
 use super::buffer::{DrawCommand, SharedBuffer};
+use super::region::Region;
+use alloc::vec::Vec;
 
 /// タスクごとのWriter
 ///
 /// 各タスクが独自のWriterインスタンスを持ち、
-/// 描画コマンドを自身のバッファに追加します。
+/// 描画コマンドをローカルバッファに蓄積し、
+/// flush()で共有バッファに一括転送します。
+///
+/// これにより、1フレームの描画で1回のロック取得のみで済み、
+/// ロック競合を大幅に削減します。
 pub struct TaskWriter {
     /// 共有バッファへの参照
     buffer: SharedBuffer,
+    /// ローカルコマンドバッファ（ロックなしで追加可能）
+    local_commands: Vec<DrawCommand>,
+    /// 描画領域（領域チェック用にキャッシュ）
+    region: Region,
     /// カーソル位置（ローカル座標）
     cursor_x: u32,
     cursor_y: u32,
@@ -23,8 +33,12 @@ impl TaskWriter {
     /// * `buffer` - 共有バッファへの参照
     /// * `color` - 初期文字色
     pub fn new(buffer: SharedBuffer, color: u32) -> Self {
+        // 共有バッファからregionを取得してキャッシュ
+        let region = buffer.lock().region();
         Self {
             buffer,
+            local_commands: Vec::with_capacity(64),
+            region,
             cursor_x: 0,
             cursor_y: 0,
             color,
@@ -51,13 +65,31 @@ impl TaskWriter {
 
     /// 領域をクリア
     ///
+    /// ローカルバッファにClearコマンドを追加します。
+    /// 実際の描画はflush()呼び出し時に行われます。
+    ///
     /// # Arguments
     /// * `bg_color` - 背景色
     pub fn clear(&mut self, bg_color: u32) {
-        let mut buf = self.buffer.lock();
-        buf.push_command(DrawCommand::Clear { color: bg_color });
+        self.local_commands
+            .push(DrawCommand::Clear { color: bg_color });
         self.cursor_x = 0;
         self.cursor_y = 0;
+    }
+
+    /// ローカルバッファのコマンドを共有バッファに一括転送
+    ///
+    /// この呼び出しでのみ共有バッファのロックを取得します。
+    /// 1フレームの描画の最後に呼び出してください。
+    pub fn flush(&mut self) {
+        if self.local_commands.is_empty() {
+            return;
+        }
+
+        let mut buf = self.buffer.lock();
+        for cmd in self.local_commands.drain(..) {
+            buf.push_command(cmd);
+        }
     }
 
     /// 改行処理
@@ -69,9 +101,7 @@ impl TaskWriter {
 
 impl core::fmt::Write for TaskWriter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        let mut buf = self.buffer.lock();
-        let region = buf.region();
-
+        // ローカルバッファに追加（ロックなし）
         for ch in s.bytes() {
             if ch == b'\n' {
                 // 改行処理（インライン展開）
@@ -79,20 +109,21 @@ impl core::fmt::Write for TaskWriter {
                 self.cursor_y += 10;
             } else {
                 // 領域内に収まるかチェック
-                if self.cursor_x + 8 > region.width {
+                if self.cursor_x + 8 > self.region.width {
                     // 改行処理（インライン展開）
                     self.cursor_x = 0;
                     self.cursor_y += 10;
                 }
 
                 // 縦方向のオーバーフロー処理
-                if self.cursor_y + 8 > region.height {
+                if self.cursor_y + 8 > self.region.height {
                     // 領域をクリアして先頭に戻る
-                    buf.push_command(DrawCommand::Clear { color: 0x00000000 });
+                    self.local_commands
+                        .push(DrawCommand::Clear { color: 0x00000000 });
                     self.cursor_y = 0;
                 }
 
-                buf.push_command(DrawCommand::DrawChar {
+                self.local_commands.push(DrawCommand::DrawChar {
                     x: self.cursor_x,
                     y: self.cursor_y,
                     ch,

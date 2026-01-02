@@ -63,6 +63,8 @@ pub extern "C" fn debug_overlay_task() -> ! {
         let _ = writeln!(writer, "-----------");
         let _ = writeln!(writer, "FPS: {}", fps);
         let _ = writeln!(writer, "Uptime: {}s", uptime_secs);
+        // ローカルバッファを共有バッファに一括転送
+        writer.flush();
 
         // 次の計算のために保存
         last_time_ms = current_time_ms;
