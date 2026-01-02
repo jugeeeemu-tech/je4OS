@@ -241,11 +241,13 @@ impl Context {
             *(rsp as *mut u64) = 0x202; // IF (Interrupt Flag) を有効化
         }
 
-        // 4. fxsave領域を確保（512バイト、16バイトアライメント）
+        // 4. fxsave領域を確保（512バイト）
+        // switch_contextと同じアラインメント処理を適用
+        let rsp_before_fxsave = rsp; // アラインメント前のRSPを保存
         rsp -= FXSAVE_SIZE;
-        rsp = (rsp / FXSAVE_ALIGN) * FXSAVE_ALIGN; // 16バイトアライメント
+        rsp = (rsp / FXSAVE_ALIGN) * FXSAVE_ALIGN; // 16バイトアラインに切り下げ
 
-        // バリデーション: 最終的なrspが有効か
+        // バリデーション: 最終的なrspが有効かつ16バイトアラインされているか
         if rsp == 0 || rsp % FXSAVE_ALIGN != 0 {
             return Err(TaskError::InvalidStackAddress);
         }
@@ -253,6 +255,8 @@ impl Context {
         // fxsave領域をゼロクリア（初期状態）
         unsafe {
             core::ptr::write_bytes(rsp as *mut u8, 0, FXSAVE_SIZE as usize);
+            // アラインメント前のRSPを保存（switch_contextと同じ位置）
+            *((rsp + 504) as *mut u64) = rsp_before_fxsave;
         }
 
         Ok(Self { rsp })
@@ -471,6 +475,10 @@ lazy_static! {
 
     /// 現在実行中のタスク
     static ref CURRENT_TASK: Mutex<Option<Box<Task>>> = Mutex::new(None);
+
+    /// ブロック中のタスク (TaskId -> Task)
+    /// ブロッキング同期プリミティブで待機中のタスクを管理
+    static ref BLOCKED_TASKS: Mutex<BTreeMap<u64, Box<Task>>> = Mutex::new(BTreeMap::new());
 }
 
 /// タスク管理システムの初期化
@@ -538,9 +546,26 @@ pub fn set_current_task(task: Task) {
 /// # Arguments
 /// * `delta` - 実際の実行時間（ナノ秒単位）
 pub fn update_current_task_vruntime(delta: u64) {
+    // 割り込みコンテキストからCURRENT_TASKロックを取得する際のデッドロック防止
+    // schedule()が既にロックを保持している場合、割り込みが発生すると
+    // ここでデッドロックする可能性があるため、割り込みを無効化してからロックを取得
+    let flags = unsafe {
+        let flags: u64;
+        core::arch::asm!("pushfq", "pop {}", "cli", out(reg) flags, options(nomem, nostack));
+        flags
+    };
+
     let mut current = CURRENT_TASK.lock();
     if let Some(task) = current.as_mut() {
         task.update_vruntime(delta);
+    }
+    drop(current);
+
+    // 割り込み状態を復元
+    unsafe {
+        if flags & 0x200 != 0 {
+            core::arch::asm!("sti", options(nomem, nostack));
+        }
     }
 }
 
@@ -565,6 +590,68 @@ pub fn check_resched_on_interrupt_exit() {
         // これにより、schedule()実行中に再度タイマー割り込みが入ることを防ぐ
         schedule();
     }
+}
+
+/// 現在のタスクIDを取得
+///
+/// # Returns
+/// 現在実行中のタスクのID。タスクが存在しない場合は新しいIDを生成
+pub fn current_task_id() -> TaskId {
+    let current = CURRENT_TASK.lock();
+    current.as_ref().map(|t| t.id()).unwrap_or_else(TaskId::new)
+}
+
+/// 現在のタスクをブロック状態にしてスケジュール
+///
+/// この関数は同期プリミティブ（BlockingMutex等）から呼び出されます。
+/// 現在のタスクをBlocked状態に設定し、BLOCKED_TASKSに移動してスケジューラを呼び出します。
+pub fn block_current_task() {
+    {
+        let mut current = CURRENT_TASK.lock();
+        if let Some(task) = current.as_mut() {
+            task.set_state(TaskState::Blocked);
+        }
+    }
+    schedule();
+}
+
+/// 指定タスクをアンブロック（Ready状態に戻す）
+///
+/// BLOCKED_TASKSから取り出してTASK_QUEUEに追加します。
+///
+/// # Arguments
+/// * `task_id` - アンブロックするタスクのID
+pub fn unblock_task(task_id: TaskId) {
+    let mut blocked_tasks = BLOCKED_TASKS.lock();
+
+    if let Some(mut task) = blocked_tasks.remove(&task_id.as_u64()) {
+        // Ready状態に戻す
+        task.set_state(TaskState::Ready);
+
+        // TASK_QUEUEに追加
+        let key = (task.vruntime(), task.id().as_u64());
+        drop(blocked_tasks); // ロックを早期に解放
+
+        let mut tree = TASK_QUEUE.lock();
+        tree.insert(key, task);
+    }
+}
+
+/// 割り込みコンテキスト内かどうかを判定
+///
+/// RFLAGSのIFフラグ（bit 9）をチェックします。
+/// IF=0（割り込み無効）の場合、割り込みコンテキストの可能性が高いと判断します。
+///
+/// # Returns
+/// 割り込みコンテキスト内ならtrue、通常コンテキストならfalse
+pub fn is_interrupt_context() -> bool {
+    let rflags: u64;
+    unsafe {
+        core::arch::asm!("pushfq; pop {}", out(reg) rflags, options(nomem, nostack));
+    }
+    // IF=0 なら割り込み無効＝割り込みコンテキストの可能性
+    // より正確には、割り込み無効化されている＝ブロックすべきでない
+    (rflags & 0x200) == 0
 }
 
 /// 次に実行するタスクを選択してコンテキストスイッチ
@@ -605,11 +692,25 @@ pub fn schedule() {
         // （Box内のTaskは移動しても同じアドレスに留まる）
         let old_ctx_ptr = old_task.context_mut() as *mut Context;
 
-        // 終了していないタスクのみツリーに戻す
-        // vruntimeが更新されているので、新しいキーで挿入
-        if old_task.state() != TaskState::Terminated {
-            let key = (old_task.vruntime(), old_task.id().as_u64());
-            tree.insert(key, old_task);
+        // タスクの状態に応じて適切な場所に戻す
+        match old_task.state() {
+            TaskState::Terminated => {
+                // 終了したタスクは破棄
+            }
+            TaskState::Blocked => {
+                // ブロック中のタスクはBLOCKED_TASKSに移動
+                let task_id = old_task.id().as_u64();
+                drop(tree); // TASK_QUEUEのロックを解放
+                let mut blocked = BLOCKED_TASKS.lock();
+                blocked.insert(task_id, old_task);
+                drop(blocked);
+                tree = TASK_QUEUE.lock(); // 再度ロック取得
+            }
+            _ => {
+                // Ready状態のタスクはTASK_QUEUEに戻す
+                let key = (old_task.vruntime(), old_task.id().as_u64());
+                tree.insert(key, old_task);
+            }
         }
 
         old_ctx_ptr
@@ -659,21 +760,24 @@ pub unsafe extern "C" fn switch_context(old_context: *mut Context, new_context: 
         "push r15",
         // RFLAGSを保存
         "pushfq",
-        // fxsave用の領域を確保（512バイト、16バイトアライメント）
+        // fxsave用の領域を確保し、16バイトアラインを保証
+        // call命令で8バイトプッシュされているため、アラインメント調整が必要
+        "mov r11, rsp", // アラインメント前のRSPを保存
         "sub rsp, 512",
-        "and rsp, ~0xF", // 16バイトアライメント
+        "and rsp, -16", // 16バイトアラインに切り下げ
         // FPU/SSE状態を保存
         "fxsave [rsp]",
+        // アラインメント前のRSPをスタックに保存（復元時に必要）
+        "mov [rsp + 504], r11", // fxsave領域の末尾近くに保存
         // 現在のrspをold_contextに保存
-        // old_context->rsp = rsp
-        "mov [rdi], rsp", // offset 0: rsp
+        "mov [rdi], rsp",
         // ========== 新しいコンテキストを復元 ==========
         // new_context->rspを読み込み
-        "mov rsp, [rsi]", // offset 0: rsp
+        "mov rsp, [rsi]",
         // FPU/SSE状態を復元
         "fxrstor [rsp]",
-        // fxsave領域をスキップ
-        "add rsp, 512",
+        // アラインメント前のRSPを復元
+        "mov rsp, [rsp + 504]",
         // RFLAGSを復元
         "popfq",
         // callee-savedレジスタを復元（保存と逆順）
