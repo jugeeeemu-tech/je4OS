@@ -1,5 +1,38 @@
-// x86_64 I/Oポート操作
+// x86_64 I/Oポート操作と割り込み制御
 use core::arch::asm;
+
+/// 割り込みを無効化してクロージャを実行し、元の状態に復元する
+///
+/// クロージャ実行後、元の割り込み状態を復元します。
+/// 割り込みハンドラからアクセスされる可能性のあるロックを取得する際に使用します。
+///
+/// # Arguments
+/// * `f` - 割り込み無効状態で実行するクロージャ
+///
+/// # Returns
+/// クロージャの戻り値
+#[inline]
+pub fn without_interrupts<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    let rflags: u64;
+    unsafe {
+        // RFLAGSを保存して割り込みを無効化
+        asm!("pushfq; pop {}; cli", out(reg) rflags, options(nomem, nostack));
+    }
+
+    let result = f();
+
+    // 元々割り込みが有効だった場合のみ復元
+    if rflags & 0x200 != 0 {
+        unsafe {
+            asm!("sti", options(nomem, nostack));
+        }
+    }
+
+    result
+}
 
 // I/Oポートに1バイト書き込み
 #[inline]

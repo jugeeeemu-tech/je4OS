@@ -10,6 +10,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use lazy_static::lazy_static;
 use spin::Mutex;
 
+use crate::io::without_interrupts;
 use crate::paging::KERNEL_VIRTUAL_BASE;
 
 /// タスク操作のエラー型
@@ -886,38 +887,6 @@ pub fn is_interrupt_context() -> bool {
     // IF=0 なら割り込み無効＝割り込みコンテキストの可能性
     // より正確には、割り込み無効化されている＝ブロックすべきでない
     (rflags & 0x200) == 0
-}
-
-/// 割り込みを無効化してクロージャを実行
-///
-/// クロージャ実行後、元の割り込み状態を復元します。
-/// 割り込みハンドラからアクセスされる可能性のあるロックを取得する際に使用します。
-///
-/// # Arguments
-/// * `f` - 割り込み無効状態で実行するクロージャ
-///
-/// # Returns
-/// クロージャの戻り値
-fn without_interrupts<F, R>(f: F) -> R
-where
-    F: FnOnce() -> R,
-{
-    let rflags: u64;
-    unsafe {
-        // RFLAGSを保存して割り込みを無効化
-        core::arch::asm!("pushfq; pop {}; cli", out(reg) rflags, options(nomem, nostack));
-    }
-
-    let result = f();
-
-    // 元々割り込みが有効だった場合のみ再有効化
-    if rflags & 0x200 != 0 {
-        unsafe {
-            core::arch::asm!("sti", options(nomem, nostack));
-        }
-    }
-
-    result
 }
 
 /// 次に実行するタスクを選択してコンテキストスイッチ
