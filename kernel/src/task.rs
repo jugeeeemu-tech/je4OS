@@ -4,6 +4,7 @@
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::collections::VecDeque;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use lazy_static::lazy_static;
 use spin::Mutex;
@@ -67,6 +68,42 @@ pub mod priority {
     pub const DEFAULT: u8 = 10;
     /// 最高優先度
     pub const MAX: u8 = 255;
+    /// リアルタイムクラスの下限（この値以上はリアルタイムクラス）
+    pub const RT_MIN: u8 = 100;
+}
+
+/// スケジューリングクラス
+///
+/// タスクの優先度クラスを表します。上位クラスのキューが空になるまで、
+/// 下位クラスのタスクは実行されません。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchedulingClass {
+    /// リアルタイムクラス（最高優先度）
+    /// Compositor、マウス描画など即座に応答が必要なタスク用
+    Realtime = 2,
+    /// 通常クラス（CFS方式）
+    /// 一般的なアプリケーションタスク用
+    Normal = 1,
+    /// アイドルクラス（最低優先度）
+    /// 他に実行可能タスクがない場合のみ実行
+    Idle = 0,
+}
+
+/// 優先度からスケジューリングクラスを判定
+///
+/// # Arguments
+/// * `priority` - タスクの優先度 (0-255)
+///
+/// # Returns
+/// 対応するスケジューリングクラス
+pub fn priority_to_class(priority: u8) -> SchedulingClass {
+    if priority == priority::IDLE {
+        SchedulingClass::Idle
+    } else if priority >= priority::RT_MIN {
+        SchedulingClass::Realtime
+    } else {
+        SchedulingClass::Normal
+    }
 }
 
 /// f32の整数べき乗を計算（no_std環境用）
@@ -304,10 +341,12 @@ pub struct Task {
     name: &'static str,
     /// タスク優先度（0-255、数値が大きいほど優先度が高い）
     priority: u8,
-    /// スケジューリング用の重み（優先度から計算）
+    /// スケジューリングクラス（Realtime, Normal, Idle）
+    sched_class: SchedulingClass,
+    /// スケジューリング用の重み（優先度から計算、Normalクラスで使用）
     /// 値が大きいほど、vruntimeの増加が遅くなり、より頻繁に実行される
     weight: u32,
-    /// 仮想実行時間（CFS風スケジューリング）
+    /// 仮想実行時間（CFS風スケジューリング、Normalクラスで使用）
     /// この値が小さいタスクが優先的に実行される
     vruntime: u64,
     /// CPUコンテキスト
@@ -346,13 +385,15 @@ impl Task {
 
         let context = Context::new(entry_point as u64, stack_top)?;
 
-        // 優先度から重みを計算
+        // 優先度から重みとスケジューリングクラスを計算
         let weight = priority_to_weight(priority);
+        let sched_class = priority_to_class(priority);
 
         Ok(Self {
             id: TaskId::new(),
             name,
             priority,
+            sched_class,
             weight,
             vruntime: 0, // 初期値は0
             context,
@@ -387,6 +428,7 @@ impl Task {
             id: TaskId::new(),
             name,
             priority: priority::IDLE,
+            sched_class: SchedulingClass::Idle, // アイドルタスクは常にIdleクラス
             weight,
             vruntime: 0, // 初期値は0
             context,
@@ -408,6 +450,11 @@ impl Task {
     /// タスク優先度を取得
     pub fn priority(&self) -> u8 {
         self.priority
+    }
+
+    /// スケジューリングクラスを取得
+    pub fn sched_class(&self) -> SchedulingClass {
+        self.sched_class
     }
 
     /// タスクの重みを取得
@@ -471,12 +518,21 @@ static ACCUMULATED_RUNTIME: AtomicU64 = AtomicU64::new(0);
 /// 現在のタスクが存在しない場合、このコンテキストに「保存」する（実際には捨てられる）
 static mut DUMMY_CONTEXT: Context = Context { rsp: 0 };
 
-// グローバルタスクキュー
+// グローバルタスクキュー（マルチレベル）
 lazy_static! {
-    /// 実行可能なタスクのツリー (Ready状態のタスク)
+    /// リアルタイムキュー (Realtimeクラスのタスク)
+    /// キー: (255 - priority, task_id) - 優先度が高い順にソート
+    /// 値: タスク
+    static ref RT_QUEUE: Mutex<BTreeMap<(u8, u64), Box<Task>>> = Mutex::new(BTreeMap::new());
+
+    /// 通常キュー (Normalクラスのタスク、CFS方式)
     /// キー: (vruntime, task_id) - vruntimeでソートされ、同じvruntimeの場合はtask_idで区別
     /// 値: タスク
-    static ref TASK_QUEUE: Mutex<BTreeMap<(u64, u64), Box<Task>>> = Mutex::new(BTreeMap::new());
+    static ref CFS_QUEUE: Mutex<BTreeMap<(u64, u64), Box<Task>>> = Mutex::new(BTreeMap::new());
+
+    /// アイドルキュー (Idleクラスのタスク)
+    /// FIFO順で管理
+    static ref IDLE_QUEUE: Mutex<VecDeque<Box<Task>>> = Mutex::new(VecDeque::new());
 
     /// 現在実行中のタスク
     static ref CURRENT_TASK: Mutex<Option<Box<Task>>> = Mutex::new(None);
@@ -491,6 +547,39 @@ pub fn init() {
     crate::info!("Task system initialized");
 }
 
+/// タスクを適切なキューに追加（内部ヘルパー関数）
+///
+/// スケジューリングクラスに応じて、RT_QUEUE、CFS_QUEUE、IDLE_QUEUEのいずれかに追加します。
+///
+/// # Arguments
+/// * `task` - 追加するタスク
+/// * `rt_queue` - リアルタイムキューのロック済みガード
+/// * `cfs_queue` - CFSキューのロック済みガード
+/// * `idle_queue` - アイドルキューのロック済みガード
+fn enqueue_task(
+    task: Box<Task>,
+    rt_queue: &mut BTreeMap<(u8, u64), Box<Task>>,
+    cfs_queue: &mut BTreeMap<(u64, u64), Box<Task>>,
+    idle_queue: &mut VecDeque<Box<Task>>,
+) {
+    match task.sched_class() {
+        SchedulingClass::Realtime => {
+            // リアルタイムキュー: (255 - priority, task_id) で優先度高い順にソート
+            let key = (255 - task.priority(), task.id().as_u64());
+            rt_queue.insert(key, task);
+        }
+        SchedulingClass::Normal => {
+            // CFSキュー: (vruntime, task_id) でソート
+            let key = (task.vruntime(), task.id().as_u64());
+            cfs_queue.insert(key, task);
+        }
+        SchedulingClass::Idle => {
+            // アイドルキュー: FIFO
+            idle_queue.push_back(task);
+        }
+    }
+}
+
 /// 新しいタスクをタスクキューに追加（エラーハンドリング版）
 ///
 /// # Arguments
@@ -501,21 +590,41 @@ pub fn init() {
 ///
 /// # Note
 /// 割り込みを無効化してからロックを取得し、デッドロックを防ぎます。
+/// スケジューリングクラスに応じて、適切なキュー（RT/CFS/IDLE）に追加します。
 pub fn try_add_task(task: Task) -> Result<(), TaskError> {
     let task_id = task.id().as_u64();
-    let vruntime = task.vruntime();
+    let sched_class = task.sched_class();
     // 名前を所有型として取得（借用を終わらせるため）
     let name = alloc::format!("{}", task.name());
 
     without_interrupts(|| {
-        let mut tree = TASK_QUEUE.lock();
-
-        // BTreeMapに追加: キーは(vruntime, task_id)
         let boxed_task = Box::new(task);
-        tree.insert((vruntime, task_id), boxed_task);
+
+        // スケジューリングクラスに応じて適切なキューに追加
+        match sched_class {
+            SchedulingClass::Realtime => {
+                let mut rt = RT_QUEUE.lock();
+                let key = (255 - boxed_task.priority(), task_id);
+                rt.insert(key, boxed_task);
+            }
+            SchedulingClass::Normal => {
+                let mut cfs = CFS_QUEUE.lock();
+                let key = (boxed_task.vruntime(), task_id);
+                cfs.insert(key, boxed_task);
+            }
+            SchedulingClass::Idle => {
+                let mut idle = IDLE_QUEUE.lock();
+                idle.push_back(boxed_task);
+            }
+        }
     });
 
-    crate::info!("Task added to queue: ID={}, name={}", task_id, name);
+    crate::info!(
+        "Task added to queue: ID={}, name={}, class={:?}",
+        task_id,
+        name,
+        sched_class
+    );
     Ok(())
 }
 
@@ -627,7 +736,7 @@ pub fn block_current_task() {
 
 /// 指定タスクをアンブロック（Ready状態に戻す）
 ///
-/// BLOCKED_TASKSから取り出してTASK_QUEUEに追加します。
+/// BLOCKED_TASKSから取り出して、スケジューリングクラスに応じたキューに追加します。
 ///
 /// # Arguments
 /// * `task_id` - アンブロックするタスクのID
@@ -641,13 +750,26 @@ pub fn unblock_task(task_id: TaskId) {
         if let Some(mut task) = blocked_tasks.remove(&task_id.as_u64()) {
             // Ready状態に戻す
             task.set_state(TaskState::Ready);
-
-            // TASK_QUEUEに追加
-            let key = (task.vruntime(), task.id().as_u64());
+            let sched_class = task.sched_class();
             drop(blocked_tasks); // ロックを早期に解放
 
-            let mut tree = TASK_QUEUE.lock();
-            tree.insert(key, task);
+            // スケジューリングクラスに応じて適切なキューに追加
+            match sched_class {
+                SchedulingClass::Realtime => {
+                    let mut rt = RT_QUEUE.lock();
+                    let key = (255 - task.priority(), task.id().as_u64());
+                    rt.insert(key, task);
+                }
+                SchedulingClass::Normal => {
+                    let mut cfs = CFS_QUEUE.lock();
+                    let key = (task.vruntime(), task.id().as_u64());
+                    cfs.insert(key, task);
+                }
+                SchedulingClass::Idle => {
+                    let mut idle = IDLE_QUEUE.lock();
+                    idle.push_back(task);
+                }
+            }
         }
     });
 }
@@ -703,10 +825,10 @@ where
 
 /// 次に実行するタスクを選択してコンテキストスイッチ
 ///
-/// CFS風のスケジューリングを行います。
-/// - vruntimeが最も小さいタスクを選択（BTreeMapの最左端）
-/// - 同じvruntimeの場合は、task_idで区別（自動的にソート済み）
-/// - 現在のタスクがある場合は、それをツリーに戻します
+/// マルチレベルキュースケジューリングを行います。
+/// - 優先順位: Realtime > Normal (CFS) > Idle
+/// - 上位クラスのキューが空になるまで、下位クラスのタスクは実行されません
+/// - Realtimeクラス内では優先度順、Normalクラス内ではvruntime順
 ///
 /// RFLAGSの保存・復元はswitch_context()内部で自動的に行われます。
 /// switch_context()でRFLAGSのIFフラグが強制セットされるため、
@@ -722,23 +844,39 @@ pub fn schedule() {
         core::arch::asm!("cli", options(nomem, nostack));
     }
 
-    let mut tree = TASK_QUEUE.lock();
+    // 3つのキューをロック（固定順序でデッドロック防止）
+    let mut rt_queue = RT_QUEUE.lock();
+    let mut cfs_queue = CFS_QUEUE.lock();
+    let mut idle_queue = IDLE_QUEUE.lock();
     let mut current = CURRENT_TASK.lock();
 
-    // ツリーが空の場合は何もしない
-    if tree.is_empty() {
-        drop(tree);
+    // 次に実行するタスクを選択（優先順位: Realtime > Normal > Idle）
+    let next_task = if let Some(entry) = rt_queue.pop_first() {
+        // 1. リアルタイムキューから取得（優先度が最も高いタスク）
+        Some(entry.1)
+    } else if let Some(entry) = cfs_queue.pop_first() {
+        // 2. CFSキューから取得（vruntimeが最も小さいタスク）
+        Some(entry.1)
+    } else if let Some(task) = idle_queue.pop_front() {
+        // 3. アイドルキューから取得（FIFO）
+        Some(task)
+    } else {
+        // 実行可能なタスクがない
+        None
+    };
+
+    // タスクがない場合は何もしない
+    let Some(mut next_task) = next_task else {
+        drop(rt_queue);
+        drop(cfs_queue);
+        drop(idle_queue);
         drop(current);
         // 割り込みを再有効化
         unsafe {
             core::arch::asm!("sti", options(nomem, nostack));
         }
         return;
-    }
-
-    // vruntimeが最も小さいタスクを取得（O(log n)）
-    // BTreeMapのfirst_entry()は最小のキーを持つエントリを返す
-    let mut next_task = tree.pop_first().unwrap().1;
+    };
 
     next_task.set_state(TaskState::Running);
 
@@ -746,9 +884,9 @@ pub fn schedule() {
 
     // 古いタスクのコンテキストを保存する準備
     let old_context_ptr = if let Some(mut old_task) = current.take() {
-        // 蓄積された実行時間でvruntimeを更新（確実に反映）
+        // 蓄積された実行時間でvruntimeを更新（Normalクラスのみ有効）
         let accumulated = ACCUMULATED_RUNTIME.swap(0, Ordering::Relaxed);
-        if accumulated > 0 {
+        if accumulated > 0 && old_task.sched_class() == SchedulingClass::Normal {
             old_task.update_vruntime(accumulated);
         }
 
@@ -769,16 +907,21 @@ pub fn schedule() {
             TaskState::Blocked => {
                 // ブロック中のタスクはBLOCKED_TASKSに移動
                 let task_id = old_task.id().as_u64();
-                drop(tree); // TASK_QUEUEのロックを解放
+                // キューのロックを一時解放
+                drop(rt_queue);
+                drop(cfs_queue);
+                drop(idle_queue);
                 let mut blocked = BLOCKED_TASKS.lock();
                 blocked.insert(task_id, old_task);
                 drop(blocked);
-                tree = TASK_QUEUE.lock(); // 再度ロック取得
+                // 再度ロック取得
+                rt_queue = RT_QUEUE.lock();
+                cfs_queue = CFS_QUEUE.lock();
+                idle_queue = IDLE_QUEUE.lock();
             }
             _ => {
-                // Ready状態のタスクはTASK_QUEUEに戻す
-                let key = (old_task.vruntime(), old_task.id().as_u64());
-                tree.insert(key, old_task);
+                // Ready状態のタスクはクラスに応じたキューに戻す
+                enqueue_task(old_task, &mut rt_queue, &mut cfs_queue, &mut idle_queue);
             }
         }
 
@@ -793,7 +936,9 @@ pub fn schedule() {
 
     // ロックを解放してからコンテキストスイッチ
     // （コンテキストスイッチ中にロックを保持していると、戻ってきた時に問題が起きる）
-    drop(tree);
+    drop(rt_queue);
+    drop(cfs_queue);
+    drop(idle_queue);
     drop(current);
 
     // コンテキストスイッチを実行
