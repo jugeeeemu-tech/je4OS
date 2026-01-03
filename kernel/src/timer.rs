@@ -193,6 +193,16 @@ pub fn softirq_pending() -> bool {
     SOFTIRQ_PENDING.load(AtomicOrdering::Acquire)
 }
 
+/// softirq処理中かどうかを確認
+///
+/// ネストした割り込みハンドラでスケジューリングをスキップするために使用。
+/// do_softirq()実行中にコンテキストスイッチが発生すると、
+/// IN_SOFTIRQフラグがクリアされずに残り、全softirq処理が永続的にスキップされる問題を防ぐ。
+#[inline]
+pub fn in_softirq() -> bool {
+    IN_SOFTIRQ.load(AtomicOrdering::Acquire)
+}
+
 /// softirq処理を実行（割り込み復帰時に呼ばれる）
 ///
 /// Linux風のbottom half処理。割り込み有効状態で呼ばれる必要があります。

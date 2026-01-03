@@ -240,6 +240,14 @@ pub fn check_resched_on_interrupt_exit() {
     }
 
     // 2. スケジューリングチェック
+    // softirq処理中（IN_SOFTIRQ == true）の場合はスケジューリングをスキップ
+    // これにより、do_softirq()が完了するまでコンテキストスイッチを防ぐ
+    // ネストした割り込みでschedule()が呼ばれると、do_softirq()が完了せず
+    // IN_SOFTIRQが永続的にtrueのまま残り、全softirq処理がスキップされる問題を防ぐ
+    if crate::timer::in_softirq() {
+        return;
+    }
+
     // softirq処理でunblockされたタスクも含めてスケジューリング
     if NEED_RESCHED.swap(false, Ordering::Acquire) {
         // 割り込みは無効のままschedule()を呼び出す
