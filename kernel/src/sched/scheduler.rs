@@ -209,38 +209,44 @@ pub fn set_need_resched() {
     NEED_RESCHED.store(true, Ordering::Release);
 }
 
-/// 割り込み復帰時にスケジューリングとsoftirq処理をチェック
+/// 割り込み復帰時にsoftirq処理とスケジューリングをチェック
 ///
-/// 1. need_reschedフラグがセットされていれば、スケジューラを呼び出します。
-/// 2. softirqフラグがセットされていれば、タイマーコールバックを処理します。
+/// 1. softirqフラグがセットされていれば、タイマーコールバックを処理します。
+/// 2. need_reschedフラグがセットされていれば、スケジューラを呼び出します。
 ///
 /// この関数は割り込みハンドラの復帰処理から呼び出されます。
 ///
 /// # Design (Linux風 softirq)
-/// - schedule()は割り込み無効の状態で実行されます
-/// - schedule()後、switch_context()でIFフラグが強制セットされ割り込みが有効になります
+/// - softirq処理を先に行うことで、sleep_msで待機中のタスクが即座にunblockされます
+/// - unblockされたタスクはschedule()で即座にスケジューリング対象になります
+/// - これにより、sleep_msの遅延が最小化されます（+1 tick遅延を回避）
 /// - softirq処理は割り込み有効状態で実行され、コールバック内でブロック可能です
+/// - schedule()は割り込み無効の状態で実行されます
 /// - 処理中に新たな割り込みが発生しても、do_softirq()の再入は防止されます
 pub fn check_resched_on_interrupt_exit() {
-    // 1. スケジューリングチェック
-    if NEED_RESCHED.swap(false, Ordering::Acquire) {
-        // 割り込みは無効のままschedule()を呼び出す
-        // これにより、schedule()実行中に再度タイマー割り込みが入ることを防ぐ
-        schedule();
-    }
-
-    // 2. softirq処理（タイマーコールバック実行）
-    // - schedule()が呼ばれた場合: switch_context()でIF強制セット済み
-    // - schedule()が呼ばれなかった場合: まだ割り込み無効
-    // どちらの場合も sti で有効化してから処理（既に有効でも無害）
+    // 1. softirq処理（タイマーコールバック実行）
+    // schedule()の前に実行することで、unblockされたタスクが即座にスケジューリング対象になる
     if crate::timer::softirq_pending() {
         // SAFETY: STI命令は割り込みフラグを有効化するのみで安全。
         unsafe {
             core::arch::asm!("sti", options(nomem, nostack));
         }
         crate::timer::do_softirq();
-        // iretqで元のRFLAGSが復元されるのでcliは不要
+        // schedule()は割り込み無効状態で実行するためcliで無効化
+        // SAFETY: CLI命令は割り込みフラグを無効化するのみで安全。
+        unsafe {
+            core::arch::asm!("cli", options(nomem, nostack));
+        }
     }
+
+    // 2. スケジューリングチェック
+    // softirq処理でunblockされたタスクも含めてスケジューリング
+    if NEED_RESCHED.swap(false, Ordering::Acquire) {
+        // 割り込みは無効のままschedule()を呼び出す
+        // これにより、schedule()実行中に再度タイマー割り込みが入ることを防ぐ
+        schedule();
+    }
+    // iretqで元のRFLAGSが復元される
 }
 
 /// 現在のタスクIDを取得
