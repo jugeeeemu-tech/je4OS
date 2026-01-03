@@ -65,25 +65,34 @@ impl WriterBuffer {
         self.dirty = true;
     }
 
-    /// 複数のコマンドを一括で追加
+    /// 複数のコマンドを一括で追加（アロケーションフリー）
     ///
     /// # Arguments
-    /// * `commands` - 追加する描画コマンドのVec
-    pub fn extend_commands(&mut self, commands: Vec<DrawCommand>) {
-        if commands.is_empty() {
-            return;
-        }
+    /// * `commands` - 追加する描画コマンドのイテレータ
+    pub fn extend_commands<I: IntoIterator<Item = DrawCommand>>(&mut self, commands: I) {
+        let old_len = self.commands.len();
         self.commands.extend(commands);
-        self.dirty = true;
+        if self.commands.len() > old_len {
+            self.dirty = true;
+        }
     }
 
-    /// ダーティフラグをクリアしてコマンドを取得
+    /// コマンドのスライス参照を取得（アロケーションなし）
     ///
     /// # Returns
-    /// 蓄積された描画コマンドのVec
-    pub fn take_commands(&mut self) -> Vec<DrawCommand> {
+    /// 蓄積された描画コマンドへのスライス参照
+    #[inline]
+    pub fn commands(&self) -> &[DrawCommand] {
+        &self.commands
+    }
+
+    /// コマンドをクリアしてダーティフラグをリセット
+    ///
+    /// Vecの容量は維持されるため、再アロケーションは発生しません。
+    #[inline]
+    pub fn clear_commands(&mut self) {
+        self.commands.clear();
         self.dirty = false;
-        core::mem::take(&mut self.commands)
     }
 
     /// ダーティかどうか

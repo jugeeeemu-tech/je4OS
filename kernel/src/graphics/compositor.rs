@@ -345,21 +345,18 @@ pub extern "C" fn compositor_task() -> ! {
             }
         };
 
-        // Phase 2: コマンド収集（割り込み有効）
-        let mut collected: Vec<(Region, Vec<DrawCommand>)> = Vec::new();
+        // Phase 2+3: 各バッファから直接レンダリング（アロケーションフリー）
+        // ロックを取得したままレンダリングし、終わったらクリア
         for buffer in buffers_snapshot.iter() {
             if let Some(mut buf) = buffer.try_lock() {
                 if buf.is_dirty() {
                     let region = buf.region();
-                    let commands = buf.take_commands();
-                    collected.push((region, commands));
+                    // スライス参照で直接レンダリング（Vecの移動なし）
+                    render_commands_to(&mut shadow_buffer, &region, buf.commands());
+                    // 容量を維持したままクリア（再アロケーションなし）
+                    buf.clear_commands();
                 }
             }
-        }
-
-        // Phase 3: シャドウバッファにレンダリング（割り込み有効）
-        for (region, commands) in &collected {
-            render_commands_to(&mut shadow_buffer, region, commands);
         }
 
         // Phase 4: シャドウバッファをハードウェアFBに転送（割り込み有効）

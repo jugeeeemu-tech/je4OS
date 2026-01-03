@@ -2,6 +2,7 @@
 
 use super::buffer::{DrawCommand, SharedBuffer};
 use super::region::Region;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 /// タスクごとのWriter
@@ -12,6 +13,9 @@ use alloc::vec::Vec;
 ///
 /// これにより、1フレームの描画で1回のロック取得のみで済み、
 /// ロック競合を大幅に削減します。
+///
+/// 最適化: 連続する文字をDrawStringにバッチ化することで、
+/// コマンド数を大幅に削減し、パフォーマンスを向上させます。
 pub struct TaskWriter {
     /// 共有バッファへの参照
     buffer: SharedBuffer,
@@ -24,6 +28,12 @@ pub struct TaskWriter {
     cursor_y: u32,
     /// 現在の文字色
     color: u32,
+    /// 現在蓄積中の文字列（バッチ化用）
+    pending_text: String,
+    /// 蓄積中の文字列の開始X座標
+    pending_x: u32,
+    /// 蓄積中の文字列の開始Y座標
+    pending_y: u32,
 }
 
 impl TaskWriter {
@@ -37,11 +47,14 @@ impl TaskWriter {
         let region = buffer.lock().region();
         Self {
             buffer,
-            local_commands: Vec::with_capacity(64),
+            local_commands: Vec::with_capacity(32), // バッチ化により必要なコマンド数が減少
             region,
             cursor_x: 0,
             cursor_y: 0,
             color,
+            pending_text: String::with_capacity(128), // 文字列バッファを事前確保
+            pending_x: 0,
+            pending_y: 0,
         }
     }
 
@@ -71,6 +84,8 @@ impl TaskWriter {
     /// # Arguments
     /// * `bg_color` - 背景色
     pub fn clear(&mut self, bg_color: u32) {
+        // 蓄積中のテキストをコミットしてからクリア
+        self.commit_pending_text();
         self.local_commands
             .push(DrawCommand::Clear { color: bg_color });
         self.cursor_x = 0;
@@ -82,53 +97,78 @@ impl TaskWriter {
     /// この呼び出しでのみ共有バッファのロックを取得します。
     /// 1フレームの描画の最後に呼び出してください。
     pub fn flush(&mut self) {
+        // 蓄積中のテキストをコミット
+        self.commit_pending_text();
+
         if self.local_commands.is_empty() {
             return;
         }
 
-        // 一括転送: ロック保持時間を最小化
-        let commands = core::mem::take(&mut self.local_commands);
-        self.buffer.lock().extend_commands(commands);
+        // 一括転送: drain()を使用してVecの容量を維持（アロケーションフリー）
+        self.buffer
+            .lock()
+            .extend_commands(self.local_commands.drain(..));
     }
 
-    /// 改行処理
-    fn newline(&mut self) {
-        self.cursor_x = 0;
-        self.cursor_y += 10; // 行の高さ（8ピクセル文字 + 2ピクセル間隔）
+    /// 蓄積中のテキストをDrawStringコマンドにコミット
+    ///
+    /// 複数の文字を1つのDrawStringコマンドにバッチ化することで、
+    /// コマンド数を大幅に削減します。
+    fn commit_pending_text(&mut self) {
+        if self.pending_text.is_empty() {
+            return;
+        }
+
+        // 蓄積中のテキストをDrawStringとして追加
+        // clone()でテキストをコピーし、clear()で元バッファを再利用
+        // これによりpending_textの容量は維持される（リアロケーション防止）
+        // 注: DrawCommandがStringを所有するため、新規Stringの作成は避けられない
+        let text = self.pending_text.clone();
+        self.pending_text.clear();
+        self.local_commands.push(DrawCommand::DrawString {
+            x: self.pending_x,
+            y: self.pending_y,
+            text,
+            color: self.color,
+        });
     }
 }
 
 impl core::fmt::Write for TaskWriter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        // ローカルバッファに追加（ロックなし）
+        // 最適化: 連続する文字をDrawStringにバッチ化
         for ch in s.bytes() {
             if ch == b'\n' {
-                // 改行処理（インライン展開）
+                // 改行時: 蓄積中のテキストをコミット
+                self.commit_pending_text();
                 self.cursor_x = 0;
                 self.cursor_y += 10;
             } else {
                 // 領域内に収まるかチェック
                 if self.cursor_x + 8 > self.region.width {
-                    // 改行処理（インライン展開）
+                    // 行の折り返し: 蓄積中のテキストをコミット
+                    self.commit_pending_text();
                     self.cursor_x = 0;
                     self.cursor_y += 10;
                 }
 
                 // 縦方向のオーバーフロー処理
                 if self.cursor_y + 8 > self.region.height {
-                    // 領域をクリアして先頭に戻る
+                    // 蓄積中のテキストをコミットしてからクリア
+                    self.commit_pending_text();
                     self.local_commands
                         .push(DrawCommand::Clear { color: 0x00000000 });
                     self.cursor_y = 0;
                 }
 
-                self.local_commands.push(DrawCommand::DrawChar {
-                    x: self.cursor_x,
-                    y: self.cursor_y,
-                    ch,
-                    color: self.color,
-                });
+                // 新しい行の開始位置を記録
+                if self.pending_text.is_empty() {
+                    self.pending_x = self.cursor_x;
+                    self.pending_y = self.cursor_y;
+                }
 
+                // 文字を蓄積（1バイトのASCII文字として）
+                self.pending_text.push(ch as char);
                 self.cursor_x += 8;
             }
         }

@@ -10,6 +10,27 @@ pub use font::FONT_8X8;
 pub use region::Region;
 pub use writer::TaskWriter;
 
+/// 高速なメモリ塗りつぶし（rep stosd使用）
+///
+/// x86-64の`rep stosd`命令を使用して、32ビット値を連続してメモリに書き込みます。
+/// ループオーバーヘッドなしで高速に動作します。
+///
+/// # Safety
+/// - ptrは有効なメモリアドレスで、count個のu32を書き込める領域を指す必要がある
+#[inline(always)]
+unsafe fn fast_fill_u32(ptr: *mut u32, value: u32, count: usize) {
+    if count == 0 {
+        return;
+    }
+    core::arch::asm!(
+        "rep stosd",
+        inout("rdi") ptr => _,
+        inout("ecx") count => _,
+        in("eax") value,
+        options(nostack, preserves_flags)
+    );
+}
+
 // フレームバッファに文字を描画
 //
 // # Safety
@@ -124,7 +145,7 @@ pub unsafe fn draw_rect(
     }
     let clipped_w = x_end - x;
 
-    // 行単位で塗りつぶし（高速化）
+    // 行単位で塗りつぶし（rep stosd使用で高速化）
     for dy in 0..h {
         let pixel_y = y.saturating_add(dy);
         // Y座標のオーバーフローチェックは省略（通常の画面サイズでは発生しない）
@@ -133,8 +154,7 @@ pub unsafe fn draw_rect(
         // SAFETY: 呼び出し側が描画範囲の有効性を保証
         unsafe {
             let row_ptr = fb.add(row_start);
-            let row_slice = core::slice::from_raw_parts_mut(row_ptr, clipped_w);
-            row_slice.fill(color);
+            fast_fill_u32(row_ptr, color, clipped_w);
         }
     }
 }
@@ -296,12 +316,11 @@ impl FramebufferWriter {
     pub fn clear_screen(&mut self, color: u32) {
         let fb = self.fb_base as *mut u32;
         let total_pixels = (self.width as usize) * (self.height as usize);
-        // slice::fill()を使用して高速に塗りつぶし
+        // rep stosdを使用して高速に塗りつぶし
         // SAFETY: fb_baseは有効なフレームバッファアドレスであり、
         // total_pixelsはwidth * heightで計算された有効な範囲
         unsafe {
-            let slice = core::slice::from_raw_parts_mut(fb, total_pixels);
-            slice.fill(color);
+            fast_fill_u32(fb, color, total_pixels);
         }
         // カーソルを左上に戻す
         self.x = 0;
