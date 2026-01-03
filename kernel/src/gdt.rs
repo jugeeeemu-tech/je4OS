@@ -8,6 +8,7 @@ use crate::paging::KERNEL_VIRTUAL_BASE;
 use core::arch::asm;
 
 /// GDT操作のエラー型
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GdtError {
     /// 初期化失敗
@@ -220,6 +221,7 @@ impl Gdt {
     }
 
     /// TSSディスクリプタを更新
+    #[allow(dead_code)]
     fn set_tss(&mut self, tss_addr: u64) {
         self.tss = TssDescriptor::new(tss_addr);
     }
@@ -240,6 +242,7 @@ static mut TSS: TaskStateSegment = TaskStateSegment::new();
 
 /// Double Fault用のISTスタック（16KB）
 /// Linux kernelと同様、Double Faultハンドラ用の専用スタックを提供
+#[allow(dead_code)]
 #[repr(align(16))]
 struct DoubleFaultStack([u8; 16384]);
 

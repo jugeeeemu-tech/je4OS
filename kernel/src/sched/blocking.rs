@@ -11,7 +11,7 @@ use spin::Mutex;
 use crate::io::without_interrupts;
 
 use super::scheduler::{CURRENT_TASK, current_task_id, schedule};
-use super::task::{SchedulingClass, Task, TaskId, TaskState};
+use super::task::{Task, TaskId, TaskState};
 
 lazy_static! {
     /// ブロック中のタスク (TaskId -> Task)

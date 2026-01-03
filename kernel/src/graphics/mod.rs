@@ -22,13 +22,16 @@ unsafe fn fast_fill_u32(ptr: *mut u32, value: u32, count: usize) {
     if count == 0 {
         return;
     }
-    core::arch::asm!(
-        "rep stosd",
-        inout("rdi") ptr => _,
-        inout("ecx") count => _,
-        in("eax") value,
-        options(nostack, preserves_flags)
-    );
+    // SAFETY: 呼び出し元がptrの有効性とcount個の書き込み可能領域を保証する
+    unsafe {
+        core::arch::asm!(
+            "rep stosd",
+            inout("rdi") ptr => _,
+            inout("ecx") count => _,
+            in("eax") value,
+            options(nostack, preserves_flags)
+        );
+    }
 }
 
 // フレームバッファに文字を描画
@@ -64,6 +67,7 @@ pub unsafe fn draw_char(fb_base: u64, width: u32, x: usize, y: usize, ch: u8, co
     let glyph = FONT_8X8[font_index];
 
     // 文字が完全に画面内に収まる場合は高速パス
+    // SAFETY: 呼び出し元が描画範囲の有効性を保証する
     if x_end <= stride {
         // 高速パス: 境界チェック不要
         for row in 0..8 {
@@ -74,7 +78,7 @@ pub unsafe fn draw_char(fb_base: u64, width: u32, x: usize, y: usize, ch: u8, co
             let row_offset = (y + row) * stride + x;
             for col in 0..8 {
                 if (glyph_row >> col) & 1 == 1 {
-                    *fb_ptr.add(row_offset + col) = color;
+                    unsafe { *fb_ptr.add(row_offset + col) = color };
                 }
             }
         }
@@ -89,7 +93,7 @@ pub unsafe fn draw_char(fb_base: u64, width: u32, x: usize, y: usize, ch: u8, co
             let row_offset = (y + row) * stride + x;
             for col in 0..visible_cols {
                 if (glyph_row >> col) & 1 == 1 {
-                    *fb_ptr.add(row_offset + col) = color;
+                    unsafe { *fb_ptr.add(row_offset + col) = color };
                 }
             }
         }
@@ -164,6 +168,7 @@ pub unsafe fn draw_rect(
 // # Safety
 // fb_base は有効なフレームバッファアドレスである必要があり、
 // 描画範囲が画面内に収まっていることを呼び出し側が保証する必要があります。
+#[allow(dead_code)]
 pub unsafe fn draw_rect_outline(
     fb_base: u64,
     width: u32,
@@ -276,17 +281,20 @@ impl FramebufferWriter {
     }
 
     // カーソル位置を設定
+    #[allow(dead_code)]
     pub fn set_position(&mut self, x: usize, y: usize) {
         self.x = x;
         self.y = y;
     }
 
     // 文字色を設定
+    #[allow(dead_code)]
     pub fn set_color(&mut self, color: u32) {
         self.color = color;
     }
 
     // 現在位置から指定幅をクリア（背景色で塗りつぶし）
+    #[allow(dead_code)]
     pub fn clear_area(&mut self, width_chars: usize, bg_color: u32) {
         let width_pixels = width_chars * 8;
         let height_pixels = 10; // 1行分の高さ

@@ -106,6 +106,7 @@ pub fn is_available() -> bool {
 }
 
 /// HPETの周波数を取得（Hz）
+#[allow(dead_code)]
 pub fn frequency() -> u64 {
     HPET_FREQUENCY.load(Ordering::SeqCst)
 }
@@ -141,6 +142,7 @@ pub fn delay_ns(ns: u64) {
 }
 
 /// 指定マイクロ秒間待機
+#[allow(dead_code)]
 pub fn delay_us(us: u64) {
     delay_ns(us * 1_000);
 }
@@ -184,6 +186,7 @@ pub fn elapsed_ns() -> u64 {
 }
 
 /// HPET初期化からの経過時間を取得（マイクロ秒）
+#[allow(dead_code)]
 pub fn elapsed_us() -> u64 {
     elapsed_ns() / 1_000
 }

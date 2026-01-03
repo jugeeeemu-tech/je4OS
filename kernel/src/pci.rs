@@ -22,6 +22,7 @@ static MMCONFIG_START_BUS: AtomicU64 = AtomicU64::new(0);
 static MMCONFIG_END_BUS: AtomicU64 = AtomicU64::new(0);
 
 /// PCIデバイス情報
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct PciDevice {
     pub bus: u8,

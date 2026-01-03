@@ -2,9 +2,10 @@
 //!
 //! メモリアドレスに関する共通的な操作を提供します。
 
-use crate::paging::{PagingError, phys_to_virt, virt_to_phys};
+use crate::paging::{PagingError, phys_to_virt};
 
 /// アドレス操作のエラー型
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AddressError {
     /// nullアドレス
@@ -53,6 +54,7 @@ impl From<PagingError> for AddressError {
 /// assert!(is_aligned(0x2000, 0x1000)); // 4KB境界
 /// assert!(!is_aligned(0x1001, 0x1000)); // 4KB境界ではない
 /// ```
+#[allow(dead_code)]
 pub fn is_aligned(addr: u64, align: u64) -> bool {
     debug_assert!(align.is_power_of_two(), "Alignment must be a power of 2");
     addr % align == 0
@@ -66,6 +68,7 @@ pub fn is_aligned(addr: u64, align: u64) -> bool {
 ///
 /// # Returns
 /// アラインメントに揃えられたアドレス
+#[allow(dead_code)]
 pub fn align_up(addr: u64, align: u64) -> u64 {
     debug_assert!(align.is_power_of_two(), "Alignment must be a power of 2");
     (addr + align - 1) & !(align - 1)
@@ -79,6 +82,7 @@ pub fn align_up(addr: u64, align: u64) -> u64 {
 ///
 /// # Returns
 /// アラインメントに揃えられたアドレス
+#[allow(dead_code)]
 pub fn align_down(addr: u64, align: u64) -> u64 {
     debug_assert!(align.is_power_of_two(), "Alignment must be a power of 2");
     addr & !(align - 1)
@@ -98,12 +102,14 @@ pub fn align_down(addr: u64, align: u64) -> u64 {
 /// # Errors
 /// * `AddressError::Null` - アドレスが0の場合
 /// * `AddressError::ConversionFailed` - アドレス変換に失敗した場合
+#[allow(dead_code)]
 pub unsafe fn phys_to_ref<T>(phys_addr: u64) -> Result<&'static T, AddressError> {
     if phys_addr == 0 {
         return Err(AddressError::Null);
     }
     let virt_addr = phys_to_virt(phys_addr)?;
-    Ok(&*(virt_addr as *const T))
+    // SAFETY: 呼び出し元がアドレスの有効性を保証する
+    Ok(unsafe { &*(virt_addr as *const T) })
 }
 
 /// 物理アドレスを仮想アドレスに変換し、型安全な可変参照として取得
@@ -121,12 +127,14 @@ pub unsafe fn phys_to_ref<T>(phys_addr: u64) -> Result<&'static T, AddressError>
 /// # Errors
 /// * `AddressError::Null` - アドレスが0の場合
 /// * `AddressError::ConversionFailed` - アドレス変換に失敗した場合
+#[allow(dead_code)]
 pub unsafe fn phys_to_mut<T>(phys_addr: u64) -> Result<&'static mut T, AddressError> {
     if phys_addr == 0 {
         return Err(AddressError::Null);
     }
     let virt_addr = phys_to_virt(phys_addr)?;
-    Ok(&mut *(virt_addr as *mut T))
+    // SAFETY: 呼び出し元がアドレスの有効性と排他的アクセスを保証する
+    Ok(unsafe { &mut *(virt_addr as *mut T) })
 }
 
 /// 仮想アドレスから型安全な参照を取得（アラインメントチェック付き）
@@ -143,6 +151,7 @@ pub unsafe fn phys_to_mut<T>(phys_addr: u64) -> Result<&'static mut T, AddressEr
 /// # Errors
 /// * `AddressError::Null` - アドレスが0の場合
 /// * `AddressError::Unaligned` - アラインメントが不正な場合
+#[allow(dead_code)]
 pub unsafe fn virt_to_ref<T>(virt_addr: u64) -> Result<&'static T, AddressError> {
     if virt_addr == 0 {
         return Err(AddressError::Null);
@@ -151,7 +160,8 @@ pub unsafe fn virt_to_ref<T>(virt_addr: u64) -> Result<&'static T, AddressError>
     if !is_aligned(virt_addr, align) {
         return Err(AddressError::Unaligned);
     }
-    Ok(&*(virt_addr as *const T))
+    // SAFETY: 呼び出し元がアドレスの有効性を保証する
+    Ok(unsafe { &*(virt_addr as *const T) })
 }
 
 /// 仮想アドレスから型安全な可変参照を取得（アラインメントチェック付き）
@@ -169,6 +179,7 @@ pub unsafe fn virt_to_ref<T>(virt_addr: u64) -> Result<&'static T, AddressError>
 /// # Errors
 /// * `AddressError::Null` - アドレスが0の場合
 /// * `AddressError::Unaligned` - アラインメントが不正な場合
+#[allow(dead_code)]
 pub unsafe fn virt_to_mut<T>(virt_addr: u64) -> Result<&'static mut T, AddressError> {
     if virt_addr == 0 {
         return Err(AddressError::Null);
@@ -177,7 +188,8 @@ pub unsafe fn virt_to_mut<T>(virt_addr: u64) -> Result<&'static mut T, AddressEr
     if !is_aligned(virt_addr, align) {
         return Err(AddressError::Unaligned);
     }
-    Ok(&mut *(virt_addr as *mut T))
+    // SAFETY: 呼び出し元がアドレスの有効性と排他的アクセスを保証する
+    Ok(unsafe { &mut *(virt_addr as *mut T) })
 }
 
 #[cfg(test)]

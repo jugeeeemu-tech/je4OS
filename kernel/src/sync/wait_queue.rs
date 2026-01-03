@@ -74,6 +74,7 @@ impl WaitQueue {
     ///
     /// # 実装詳細
     /// 各タスクの起床処理を個別に行い、ロック保持時間を最小化します。
+    #[allow(dead_code)]
     pub fn wake_all(&self) {
         loop {
             // 1つずつタスクIDを取得（割り込み無効で）

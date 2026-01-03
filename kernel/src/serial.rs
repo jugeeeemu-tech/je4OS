@@ -2,6 +2,7 @@
 use crate::io::{port_read_u8, port_write_u8};
 use core::fmt;
 
+#[allow(dead_code)]
 const COM1: u16 = 0x3F8;
 
 pub struct SerialPort {
@@ -14,6 +15,7 @@ impl SerialPort {
     }
 
     // シリアルポートの初期化
+    #[allow(dead_code)]
     pub fn init(&self) {
         unsafe {
             port_write_u8(self.base + 1, 0x00); // 割り込み無効化
@@ -60,6 +62,7 @@ impl fmt::Write for SerialPort {
 }
 
 // シリアルポートを初期化（1回だけ呼ぶ）
+#[allow(dead_code)]
 pub fn init() {
     SerialPort::new(COM1).init();
 }

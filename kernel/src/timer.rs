@@ -301,6 +301,7 @@ pub fn seconds_to_ticks(seconds: u64) -> u64 {
 }
 
 /// タイマー周波数を取得（Hz）
+#[allow(dead_code)]
 pub fn frequency_hz() -> u64 {
     TIMER_FREQUENCY_HZ.load(AtomicOrdering::SeqCst)
 }

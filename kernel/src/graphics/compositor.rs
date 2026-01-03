@@ -29,6 +29,7 @@ pub struct CompositorConfig {
     /// フレームバッファの高さ
     pub fb_height: u32,
     /// リフレッシュ間隔（tick数）
+    #[allow(dead_code)]
     pub refresh_interval_ticks: u64,
 }
 
@@ -361,7 +362,7 @@ pub extern "C" fn compositor_task() -> ! {
 
         // Phase 4: シャドウバッファをハードウェアFBに転送（割り込み有効）
         // dirty_rectがある場合のみ転送され、転送後にdirty_rectはクリアされる
-        let blitted = unsafe { shadow_buffer.blit_to(config.fb_base) };
+        let _blitted = unsafe { shadow_buffer.blit_to(config.fb_base) };
 
         FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
 

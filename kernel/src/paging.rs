@@ -10,6 +10,7 @@ use core::ptr::addr_of_mut;
 pub const KERNEL_VIRTUAL_BASE: u64 = 0xFFFF_8000_0000_0000;
 
 /// ページング操作のエラー型
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PagingError {
     /// 無効なアドレス（null、範囲外など）
@@ -83,6 +84,7 @@ pub fn virt_to_phys(virt_addr: u64) -> Result<u64, PagingError> {
 }
 
 /// ページテーブルエントリのフラグ
+#[allow(dead_code)]
 #[repr(u64)]
 pub enum PageTableFlags {
     Present = 1 << 0,        // エントリが有効
@@ -111,16 +113,19 @@ impl PageTableEntry {
     }
 
     /// エントリが有効かどうか
+    #[allow(dead_code)]
     pub fn is_present(&self) -> bool {
         (self.entry & PageTableFlags::Present as u64) != 0
     }
 
     /// フラグを設定
+    #[allow(dead_code)]
     pub fn set_flags(&mut self, flags: u64) {
         self.entry |= flags;
     }
 
     /// 物理アドレスを設定（12ビットシフト済みの値）
+    #[allow(dead_code)]
     pub fn set_address(&mut self, addr: u64) {
         // 下位12ビットをクリア（4KBアライメント）
         let addr_masked = addr & 0x000F_FFFF_FFFF_F000;
@@ -136,6 +141,7 @@ impl PageTableEntry {
     }
 
     /// 物理アドレスを取得
+    #[allow(dead_code)]
     pub fn get_address(&self) -> u64 {
         self.entry & 0x000F_FFFF_FFFF_F000
     }
@@ -186,6 +192,7 @@ impl PageTable {
 }
 
 /// CR3レジスタを読み取る
+#[allow(dead_code)]
 pub fn read_cr3() -> u64 {
     let value: u64;
     unsafe {
@@ -202,6 +209,7 @@ pub fn write_cr3(pml4_addr: u64) {
 }
 
 /// CR3レジスタをリロード（TLBフラッシュ）
+#[allow(dead_code)]
 pub fn reload_cr3() {
     let cr3 = read_cr3();
     write_cr3(cr3);
@@ -209,6 +217,7 @@ pub fn reload_cr3() {
 
 /// カーネル専用スタック（64KB）
 /// クレート内でのみ公開（kernel_mainから参照するため）
+#[allow(dead_code)]
 #[repr(align(16))]
 pub(crate) struct KernelStack([u8; 65536]);
 
@@ -219,6 +228,7 @@ pub(crate) static mut KERNEL_STACK: KernelStack = KernelStack([0; 65536]);
 /// カーネルスタックに切り替える
 /// この関数を呼ぶと、UEFIから継承した低位アドレスのスタックから
 /// カーネル専用の高位アドレスのスタックに切り替わる
+#[allow(dead_code)]
 #[unsafe(naked)]
 pub unsafe extern "C" fn switch_to_kernel_stack() {
     core::arch::naked_asm!(

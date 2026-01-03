@@ -63,6 +63,7 @@ impl TaskWriter {
     /// # Arguments
     /// * `x` - X座標（ローカル座標）
     /// * `y` - Y座標（ローカル座標）
+    #[allow(dead_code)]
     pub fn set_position(&mut self, x: u32, y: u32) {
         self.cursor_x = x;
         self.cursor_y = y;
@@ -72,6 +73,7 @@ impl TaskWriter {
     ///
     /// # Arguments
     /// * `color` - 新しい文字色（0xRRGGBB形式）
+    #[allow(dead_code)]
     pub fn set_color(&mut self, color: u32) {
         self.color = color;
     }

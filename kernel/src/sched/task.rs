@@ -10,6 +10,7 @@ use crate::paging::KERNEL_VIRTUAL_BASE;
 use super::context::Context;
 
 /// タスク操作のエラー型
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskError {
     /// 無効な優先度（アイドルタスク以下）
@@ -87,6 +88,7 @@ pub mod rt_priority {
     /// 最低優先度
     pub const MIN: u8 = 1;
     /// デフォルト優先度
+    #[allow(dead_code)]
     pub const DEFAULT: u8 = 50;
     /// 最高優先度
     pub const MAX: u8 = 99;
@@ -144,6 +146,7 @@ pub fn nice_to_weight(nice: Nice) -> u32 {
 }
 
 /// タスクの状態
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskState {
     /// 実行中（CPUを使用中）
@@ -194,6 +197,7 @@ pub struct Task {
     sched_class: SchedulingClass,
     /// Normalクラス用のnice値（-20〜+19）
     /// nice値が低いほど、より多くのCPU時間が割り当てられる
+    #[allow(dead_code)]
     nice: Nice,
     /// Realtimeクラス用の優先度（1-99）
     /// rt_priorityが高いほど、優先的に実行される
@@ -209,6 +213,7 @@ pub struct Task {
     /// タスクの状態
     state: TaskState,
     /// タスク専用スタック（ヒープに割り当て）
+    #[allow(dead_code)]
     stack: Box<TaskStack>,
 }
 
@@ -341,6 +346,7 @@ impl Task {
     }
 
     /// Nice値を取得（Normalクラス用）
+    #[allow(dead_code)]
     pub fn nice(&self) -> Nice {
         self.nice
     }
@@ -356,6 +362,7 @@ impl Task {
     }
 
     /// タスクの重みを取得
+    #[allow(dead_code)]
     pub fn weight(&self) -> u32 {
         self.weight
     }

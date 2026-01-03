@@ -14,18 +14,10 @@ mod scheduler;
 mod task;
 
 // 公開API: タスク関連
-pub use task::Nice;
-pub use task::RtPriority;
-pub use task::SchedulingClass;
 pub use task::Task;
-pub use task::TaskError;
 pub use task::TaskId;
-pub use task::TaskState;
 pub use task::nice;
 pub use task::rt_priority;
-
-// 公開API: コンテキスト関連
-pub use context::Context;
 
 // 公開API: スケジューラ関連
 pub use scheduler::add_task;
@@ -35,9 +27,7 @@ pub use scheduler::init;
 pub use scheduler::schedule;
 pub use scheduler::set_current_task;
 pub use scheduler::set_need_resched;
-pub use scheduler::try_add_task;
 pub use scheduler::update_current_task_vruntime;
-pub use scheduler::yield_now;
 
 // 公開API: ブロッキング関連
 pub use blocking::block_current_task;

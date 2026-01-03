@@ -13,6 +13,7 @@ use crate::paging::KERNEL_VIRTUAL_BASE;
 use crate::timer;
 
 /// IDT操作のエラー型
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdtError {
     /// 初期化失敗
@@ -31,6 +32,7 @@ impl core::fmt::Display for IdtError {
 }
 
 /// 現在高位アドレス空間で実行されているかチェック
+#[allow(dead_code)]
 fn is_higher_half() -> bool {
     let rip: u64;
     unsafe {
@@ -195,7 +197,7 @@ extern "C" fn check_resched_on_interrupt_exit_wrapper() {
 /// タイマー割り込みハンドラの実装
 extern "C" fn timer_handler_inner() {
     // tick数をインクリメント
-    let tick = timer::increment_tick();
+    let _tick = timer::increment_tick();
 
     // 期限切れタイマーをチェック（ペンディングキューに移動するだけ）
     timer::check_timers();
@@ -457,7 +459,7 @@ extern "C" fn double_fault_handler_inner(error_code: u64) {
     }
 
     // Guard Pageアクセスの検知（スタックオーバーフロー）
-    let guard_page_addr = unsafe {
+    let guard_page_addr = {
         let stack_addr = core::ptr::addr_of!(crate::paging::KERNEL_STACK) as u64;
         stack_addr - crate::paging::PAGE_SIZE as u64
     };

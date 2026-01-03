@@ -55,12 +55,14 @@ impl ShadowBuffer {
     }
 
     /// 高さを取得
+    #[allow(dead_code)]
     #[inline]
     pub fn height(&self) -> u32 {
         self.height
     }
 
     /// バッファ全体をクリア
+    #[allow(dead_code)]
     #[inline]
     pub fn clear(&mut self, color: u32) {
         self.buffer.fill(color);
@@ -113,6 +115,7 @@ impl ShadowBuffer {
     /// 全画面をdirtyとしてマーク
     ///
     /// clear()呼び出し時や初期化時に使用
+    #[allow(dead_code)]
     #[inline]
     pub fn mark_all_dirty(&mut self) {
         self.dirty_rect = Some(Region::new(0, 0, self.width, self.height));

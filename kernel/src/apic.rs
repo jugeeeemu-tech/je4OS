@@ -11,6 +11,7 @@ use crate::paging::KERNEL_VIRTUAL_BASE;
 use crate::pit;
 
 /// APIC操作のエラー型
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApicError {
     /// タイマーがキャリブレーションされていない

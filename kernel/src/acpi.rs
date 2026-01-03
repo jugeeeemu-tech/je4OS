@@ -66,6 +66,7 @@ impl AcpiTableHeader {
 }
 
 /// MADT (Multiple APIC Description Table) エントリタイプ
+#[allow(dead_code)]
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MadtEntryType {

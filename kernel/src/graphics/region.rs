@@ -38,6 +38,7 @@ impl Region {
     ///
     /// # Returns
     /// 点が領域内ならtrue
+    #[allow(dead_code)]
     pub fn contains(&self, px: u32, py: u32) -> bool {
         px >= self.x && px < self.x + self.width && py >= self.y && py < self.y + self.height
     }

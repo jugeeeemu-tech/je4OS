@@ -59,6 +59,7 @@ pub unsafe fn port_read_u8(port: u16) -> u8 {
 }
 
 // I/Oポートに2バイト書き込み
+#[allow(dead_code)]
 #[inline]
 pub unsafe fn port_write_u16(port: u16, value: u16) {
     unsafe {
@@ -67,6 +68,7 @@ pub unsafe fn port_write_u16(port: u16, value: u16) {
 }
 
 // I/Oポートから2バイト読み込み
+#[allow(dead_code)]
 #[inline]
 pub unsafe fn port_read_u16(port: u16) -> u16 {
     let value: u16;
@@ -77,6 +79,7 @@ pub unsafe fn port_read_u16(port: u16) -> u16 {
 }
 
 // I/Oポートに4バイト書き込み
+#[allow(dead_code)]
 #[inline]
 pub unsafe fn port_write_u32(port: u16, value: u32) {
     unsafe {
@@ -85,6 +88,7 @@ pub unsafe fn port_write_u32(port: u16, value: u32) {
 }
 
 // I/Oポートから4バイト読み込み
+#[allow(dead_code)]
 #[inline]
 pub unsafe fn port_read_u32(port: u16) -> u32 {
     let value: u32;

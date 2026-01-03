@@ -128,6 +128,7 @@ impl Context {
     }
 
     /// 空のコンテキストを作成
+    #[allow(dead_code)]
     pub const fn empty() -> Self {
         Self { rsp: 0 }
     }

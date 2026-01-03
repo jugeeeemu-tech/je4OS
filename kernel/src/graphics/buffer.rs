@@ -10,6 +10,7 @@ use alloc::vec::Vec;
 ///
 /// 生ピクセルではなく高レベルコマンドを格納することで、
 /// メモリ効率を高め、Compositorが最適化を適用可能にします。
+#[allow(dead_code)]
 #[derive(Clone)]
 pub enum DrawCommand {
     /// 文字を描画 (x, y は Region 内のローカル座標)
@@ -60,6 +61,7 @@ impl WriterBuffer {
     ///
     /// # Arguments
     /// * `cmd` - 追加する描画コマンド
+    #[allow(dead_code)]
     pub fn push_command(&mut self, cmd: DrawCommand) {
         self.commands.push(cmd);
         self.dirty = true;
